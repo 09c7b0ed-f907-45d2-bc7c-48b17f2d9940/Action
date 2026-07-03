@@ -37,6 +37,7 @@ _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", defaul
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 _SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
+_EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
 _VISUALIZATION_CONTINUATION_INTENTS = {
     "generate_visualization",
     "update_visualization",
@@ -935,7 +936,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "query": query_pretty,
                         }
                     )
-                    ctx.say(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
+                    if _EMIT_QUERY_DEBUG:
+                        ctx.say(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
 
                 # In deferred-handoff mode, initial routing/clarification can use
                 # normal dispatcher delivery and heavy generation streams via
