@@ -330,6 +330,54 @@ class LongAction(Action, ABC):
     def _release_message() -> Dict[str, str]:
         return {"type": "release"}
 
+    @staticmethod
+    def _is_control_message(message: Dict[str, Any]) -> bool:
+        """Return True if this is a lock/release control signal, not a user-visible message."""
+        return message.get("type") in {"lock", "release"}
+
+    @staticmethod
+    def _message_to_tracker_event(message: Dict[str, Any], trace_id: Optional[str] = None) -> Dict[str, Any]:
+        """Convert a ctx.say kwargs dict to a tracker bot event shape."""
+        event: Dict[str, Any] = {
+            "event": "bot",
+            "metadata": {
+                "source": "long-task-callback",
+                **(({"trace_id": trace_id}) if isinstance(trace_id, str) and trace_id.strip() else {}),
+            },
+        }
+        if isinstance(message.get("text"), str):
+            event["text"] = message["text"]
+        custom = message.get("custom")
+        if custom and isinstance(custom, dict):
+            event["data"] = {"custom": custom}
+        buttons = message.get("buttons")
+        if buttons and isinstance(buttons, list):
+            event["data"] = {**(event.get("data") or {}), "buttons": buttons}
+        return event
+
+    def _build_callback_payload(
+        self,
+        ctx: "LongActionContext",
+        message: Dict[str, Any],
+        trace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build the callback payload in the events/controls envelope format."""
+        payload: Dict[str, Any] = {"senderId": ctx.sender_id}
+        if self._is_control_message(message):
+            job_id = getattr(ctx, "_job_id", None) or ""
+            payload["controls"] = [{
+                "type": message["type"],
+                "jobId": job_id,
+                "scope": "long_action",
+                "source": "long-task-callback",
+                **(({"traceId": trace_id}) if isinstance(trace_id, str) and trace_id.strip() else {}),
+            }]
+            payload["events"] = []
+        else:
+            payload["events"] = [self._message_to_tracker_event(message, trace_id)]
+            payload["controls"] = []
+        return payload
+
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
         """Optional in-band phase before work() starts.
 
@@ -390,10 +438,8 @@ class LongAction(Action, ABC):
             job_id = uuid.uuid4().hex
 
             if _DEFER_CALLBACK_HANDOFF:
-                # Optional hybrid mode: start in normal dispatcher path and let the
-                # action explicitly switch to callback transport via
-                # ctx.enable_callback_mode().
                 ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+                ctx._job_id = job_id
                 ctx.attach_progress_callback(
                     lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
                         ctx,
@@ -424,6 +470,7 @@ class LongAction(Action, ABC):
                 return [*immediate_events, *ctx.pending_events]
 
             ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
+            ctx._job_id = job_id
 
             # In callback mode, stream every ctx.say() as a progress callback to
             # the frontend while the job is running.
@@ -456,20 +503,17 @@ class LongAction(Action, ABC):
     ) -> None:
         """Send a callback for a single ctx.say() message.
 
-        The payload shape is kept intentionally simple and dispatcher-like so
-        the frontend can treat it similarly to Rasa messages:
+        Payload envelope:
+        - Real messages go in ``events`` as tracker bot-event objects.
+        - Lock/release control signals go in ``controls`` as control objects.
 
-        {
-            "senderId": "...",
-            "messages": [ { ...ctx.say kwargs... } ]
-        }
+        {"senderId": ..., "events": [{"event": "bot", ...}], "controls": []}
+        or
+        {"senderId": ..., "events": [], "controls": [{"type": "lock|release", ...}]}
         """
 
-        payload: Dict[str, Any] = {
-            "senderId": ctx.sender_id,
-            "messages": [message],
-        }
         trace_id = _resolve_progress_trace_id(ctx, message)
+        payload: Dict[str, Any] = self._build_callback_payload(ctx, message, trace_id)
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
             "x-long-task-callback-token": callback_token,
@@ -595,10 +639,14 @@ class LongAction(Action, ABC):
         """Long-running logic. Must end with ctx.done().
 
         Use ``ctx.say(...)`` to emit any messages or structured payloads. In
-        callback mode, each ``ctx.say`` results in a callback JSON of the
-        form::
+        callback mode, each ``ctx.say`` results in a callback envelope with
+        explicit tracker events and control signals::
 
-            {"senderId": "...", "messages": [{...}]}
+            {"senderId": "...", "events": [{"event": "bot", ...}], "controls": []}
+
+        Lock/release signals are emitted separately as control payloads::
+
+            {"senderId": "...", "events": [], "controls": [{"type": "lock", ...}]}
 
         The return value is not sent to the frontend and is only for
         internal use by subclasses if needed.
