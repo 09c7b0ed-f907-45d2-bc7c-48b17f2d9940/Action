@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
+_EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
 
 _executor_concurrency_raw = env_util.get_env("ACTIONS_EXECUTOR_MAX_CONCURRENCY", default="4") or "4"
 try:
@@ -138,7 +139,8 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                             "query": query_pretty,
                         }
                     )
-                    dispatcher.utter_message(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
+                    if _EMIT_QUERY_DEBUG:
+                        dispatcher.utter_message(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
 
                 plan_obj = build_guided_plan(slots=slots, user_sub=user_sub, trace_id=trace_id)
                 dispatcher.utter_message(
