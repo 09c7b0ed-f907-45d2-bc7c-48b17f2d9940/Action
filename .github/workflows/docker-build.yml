@@ -53,15 +53,10 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          BUILD_SOURCE="auto"
           RAW_REF="${TARGET_REF:-${GITHUB_REF_NAME}}"
           SAFE_REF="$(echo "$RAW_REF" | tr '[:upper:]' '[:lower:]' | tr '/ ' '-' | tr -cd 'a-z0-9._-')"
 
           echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
-
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            BUILD_SOURCE="manual"
-          fi
 
           if [ -z "$SAFE_REF" ]; then
             SAFE_REF="manual"
@@ -71,18 +66,15 @@ jobs:
             master)
               echo "IMAGE_TAG=latest" >> "$GITHUB_ENV"
               echo "IMAGE_SHA_TAG=master-$SHORT_SHA" >> "$GITHUB_ENV"
-              echo "IMAGE_SOURCE_TAG=master-$BUILD_SOURCE-$SHORT_SHA" >> "$GITHUB_ENV"
               ;;
             dev)
               echo "IMAGE_TAG=dev" >> "$GITHUB_ENV"
               echo "IMAGE_SHA_TAG=dev-$SHORT_SHA" >> "$GITHUB_ENV"
-              echo "IMAGE_SOURCE_TAG=dev-$BUILD_SOURCE-$SHORT_SHA" >> "$GITHUB_ENV"
               ;;
             *)
               if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
                 echo "IMAGE_TAG=$SAFE_REF" >> "$GITHUB_ENV"
                 echo "IMAGE_SHA_TAG=$SAFE_REF-$SHORT_SHA" >> "$GITHUB_ENV"
-                echo "IMAGE_SOURCE_TAG=$SAFE_REF-$BUILD_SOURCE-$SHORT_SHA" >> "$GITHUB_ENV"
               else
                 echo "Unsupported branch for docker publish: ${GITHUB_REF_NAME}" >&2
                 exit 1
@@ -122,5 +114,4 @@ jobs:
             --build-arg ACTION_SSOT_VERSION=$SSOT_SHA \
             -t ghcr.io/$REPO_NAME_LC:$IMAGE_TAG \
             -t ghcr.io/$REPO_NAME_LC:$IMAGE_SHA_TAG \
-            -t ghcr.io/$REPO_NAME_LC:$IMAGE_SOURCE_TAG \
             .
