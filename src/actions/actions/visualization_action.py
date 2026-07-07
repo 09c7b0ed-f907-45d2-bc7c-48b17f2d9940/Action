@@ -655,9 +655,14 @@ def _build_confirmation_message(plan_obj: lang_schema.AnalysisPlan, is_update: b
     chart_type = (chart.chart_type or "chart").lower()
 
     # Time grouping
-    group_by = chart.group_by or []
-    grains = [grain for g in group_by if (grain := getattr(g, "grain", None)) is not None]
-    grain_str = f" per {str(grains[0]).lower()}" if grains else ""
+    semantics = chart.semantics
+    semantic_grain = None if semantics is None or semantics.time is None else semantics.time.grain
+    if semantic_grain is not None:
+        grain_str = f" per {str(semantic_grain).lower()}"
+    else:
+        group_by = chart.group_by or []
+        grains = [grain for g in group_by if (grain := getattr(g, "grain", None)) is not None]
+        grain_str = f" per {str(grains[0]).lower()}" if grains else ""
 
     # Filters
     filters = chart.filters

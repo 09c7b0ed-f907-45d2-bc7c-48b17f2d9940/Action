@@ -503,6 +503,183 @@ GroupBySpec = Union[
 ]
 
 
+AnalysisIntentType = [
+    "DISTRIBUTION",
+    "TREND",
+    "COMPARISON",
+    "RELATIONSHIP",
+    "RANK",
+]
+
+MeasureType = [
+    "DISTRIBUTION",
+    "COUNT",
+    "MEAN",
+    "MEDIAN",
+    "PERCENTILE",
+    "SUM",
+    "MIN",
+    "MAX",
+    "RATE",
+]
+
+SplitKindType = [
+    "SEX",
+    "STROKE_TYPE",
+    "AGE",
+    "NIHSS",
+    "BOOLEAN",
+    "CANONICAL",
+    "CUSTOM",
+]
+
+AxisRoleType = [
+    "METRIC_VALUE",
+    "TIME",
+    "COUNT",
+    "AGGREGATE_VALUE",
+    "CATEGORY",
+]
+
+
+class MeasureSemanticsSpec(BaseModel):
+    """Semantic description of what value should be computed for chart output."""
+
+    type: str
+    percentile: Optional[float] = None
+
+    @field_validator("type")
+    def validate_type(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in MeasureType:
+            raise ValueError(f"{v} is not a valid measure type. Allowed: {MeasureType}")
+        return v_norm
+
+    @model_validator(mode="after")
+    def validate_percentile(self) -> "MeasureSemanticsSpec":
+        if self.type == "PERCENTILE":
+            if self.percentile is None:
+                raise ValueError("measure.percentile is required when measure.type is PERCENTILE")
+            if not (0.0 < self.percentile <= 100.0):
+                raise ValueError("measure.percentile must be > 0 and <= 100")
+            return self
+        if self.percentile is not None:
+            raise ValueError("measure.percentile is only allowed when measure.type is PERCENTILE")
+        return self
+
+
+class TimeSemanticsSpec(BaseModel):
+    """Semantic time context for analysis, independent of backend retrieval strategy."""
+
+    grain: Optional[str] = None
+    window: Optional[Union[TimeWindow, TimeRange]] = None
+    include_partial: Optional[bool] = None
+
+    @field_validator("grain")
+    def validate_grain(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        if v_norm not in TIME_INTERVALS:
+            raise ValueError(f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}")
+        return v_norm
+
+
+class SplitSpec(BaseModel):
+    """Semantic split/cohort instruction for analysis.
+
+    This is planner-facing semantics. Backend groupBy selection is handled by
+    retrieval compilation and must not leak here.
+    """
+
+    kind: str
+    field: Optional[str] = None
+    categories: Optional[List[str]] = None
+
+    @field_validator("kind")
+    def validate_kind(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in SplitKindType:
+            raise ValueError(f"{v} is not a valid split kind. Allowed: {SplitKindType}")
+        return v_norm
+
+    @model_validator(mode="after")
+    def validate_field_requirements(self) -> "SplitSpec":
+        if self.kind in {"BOOLEAN", "CANONICAL"}:
+            if not isinstance(self.field, str) or not self.field.strip():
+                raise ValueError(f"split.field is required when split.kind is {self.kind}")
+            self.field = self.field.strip().upper()
+        elif self.field is not None and not self.field.strip():
+            self.field = None
+        return self
+
+
+class AxisSemanticsSpec(BaseModel):
+    """Optional advanced axis override for planner output semantics."""
+
+    role: str
+    metric: Optional[str] = None
+    label: Optional[str] = None
+    unit: Optional[str] = None
+    aggregation: Optional[str] = None
+    grain: Optional[str] = None
+
+    @field_validator("role")
+    def validate_role(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in AxisRoleType:
+            raise ValueError(f"{v} is not a valid axis role. Allowed: {AxisRoleType}")
+        return v_norm
+
+    @field_validator("aggregation")
+    def validate_aggregation(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        if v_norm not in MeasureType:
+            raise ValueError(f"{v} is not a valid aggregation. Allowed: {MeasureType}")
+        return v_norm
+
+    @field_validator("grain")
+    def validate_grain(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        if v_norm not in TIME_INTERVALS:
+            raise ValueError(f"{v} is not a valid axis grain. Allowed: {sorted(TIME_INTERVALS)}")
+        return v_norm
+
+    @field_validator("metric")
+    def validate_metric(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        allowed_values = _enum_allowed_values(MetricType)
+        if v_norm not in allowed_values:
+            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
+        return v_norm
+
+
+class AnalysisSemanticsSpec(BaseModel):
+    """Planner-facing semantic analysis contract for a chart request."""
+
+    intent: str
+    measure: Optional[MeasureSemanticsSpec] = None
+    splits: Optional[List[SplitSpec]] = None
+    time: Optional[TimeSemanticsSpec] = None
+    x_axis: Optional[AxisSemanticsSpec] = Field(default=None, alias="xAxis")
+    y_axis: Optional[AxisSemanticsSpec] = Field(default=None, alias="yAxis")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("intent")
+    def validate_intent(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in AnalysisIntentType:
+            raise ValueError(f"{v} is not a valid analysis intent. Allowed: {AnalysisIntentType}")
+        return v_norm
+
+
 class DataOriginSpec(BaseModel):
     """Data origin scope for a metric/chart query."""
 
@@ -664,6 +841,7 @@ class ChartSpec(BaseModel):
     """
 
     chart_type: str  # Should be a value from ChartType
+    semantics: Optional[AnalysisSemanticsSpec] = None
     filters: Optional[FilterNode] = None
     group_by: Optional[List[GroupBySpec]] = None
     metrics: List[MetricSpec]

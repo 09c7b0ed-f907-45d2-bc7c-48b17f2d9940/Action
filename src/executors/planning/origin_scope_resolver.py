@@ -669,9 +669,11 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
 
         chart_filters = cast(Optional[S.FilterNode], getattr(chart, "filters", None))
         chart_group_by = cast(Optional[List[S.GroupBySpec]], getattr(chart, "group_by", None))
+        chart_semantics = cast(Optional[S.AnalysisSemanticsSpec], getattr(chart, "semantics", None))
         chart_numeric_resolution = cast(Optional[S.NumericResolutionSpec], getattr(chart, "numeric_resolution", None))
         resolved_chart = S.ChartSpec(
             chart_type=chart.chart_type,
+            semantics=chart_semantics,
             filters=chart_filters,
             group_by=chart_group_by,
             metrics=resolved_metrics,

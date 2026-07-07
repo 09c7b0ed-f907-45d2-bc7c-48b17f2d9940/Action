@@ -438,7 +438,7 @@ def build_chart_dto(
     )
 
     if chart_type_upper == ChartType.LINE.value:
-        has_time_grouping = any(isinstance(g, GroupByTime) for g in (plan_chart.group_by or []))
+        has_time_grouping = any(isinstance(dimension.spec, GroupByTime) for dimension in dimensions)
         return LineChart(metadata=metadata, series=series, smooth=not has_time_grouping)
     if chart_type_upper == ChartType.BAR.value:
         return BarChart(metadata=metadata, series=series)

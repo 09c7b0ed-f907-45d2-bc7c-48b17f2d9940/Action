@@ -2,22 +2,61 @@ import json
 from typing import Dict, List, Tuple
 
 from src.domain.langchain.schema import (
+    AnalysisSemanticsSpec,
     AnalysisPlan,
     AndFilter,
+    AxisSemanticsSpec,
     ChartSpec,
     DateFilter,
     GroupByCanonicalField,
     GroupBySex,
     GroupByStrokeType,
     GroupByTime,
+    MeasureSemanticsSpec,
     MetricSpec,
     NumericResolutionSpec,
     OriginScopeSpec,
     SexFilter,
+    SplitSpec,
     StatisticalTestSpec,
     StrokeFilter,
+    TimeSemanticsSpec,
     TimeWindow,
 )
+
+
+def _semantics(
+    *,
+    metric: str,
+    intent: str,
+    measure: str,
+    splits: List[SplitSpec] | None = None,
+    time_grain: str | None = None,
+) -> AnalysisSemanticsSpec:
+    metric_code = metric.upper()
+    intent_code = intent.upper()
+    measure_code = measure.upper()
+
+    time = TimeSemanticsSpec(grain=time_grain.upper()) if time_grain else None
+
+    if intent_code == "DISTRIBUTION":
+        x_axis = AxisSemanticsSpec(role="METRIC_VALUE", metric=metric_code)
+        y_axis = AxisSemanticsSpec(role="COUNT")
+    elif intent_code == "TREND":
+        x_axis = AxisSemanticsSpec(role="TIME", grain=(time_grain or "MONTH").upper())
+        y_axis = AxisSemanticsSpec(role="AGGREGATE_VALUE", metric=metric_code, aggregation=measure_code)
+    else:
+        x_axis = AxisSemanticsSpec(role="CATEGORY")
+        y_axis = AxisSemanticsSpec(role="AGGREGATE_VALUE", metric=metric_code, aggregation=measure_code)
+
+    return AnalysisSemanticsSpec(
+        intent=intent_code,
+        measure=MeasureSemanticsSpec(type=measure_code),
+        splits=splits,
+        time=time,
+        x_axis=x_axis,
+        y_axis=y_axis,
+    )
 
 
 def example_dtn_by_sex() -> Tuple[str, str]:
@@ -30,6 +69,12 @@ def example_dtn_by_sex() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="DISTRIBUTION",
+                    measure="DISTRIBUTION",
+                    splits=[SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+                ),
                 group_by=[GroupBySex(categories=["MALE", "FEMALE"])],
                 metrics=[
                     MetricSpec(
@@ -55,6 +100,12 @@ def example_dtn_by_first_contact_place() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="CANONICAL", field="FIRST_CONTACT_PLACE")],
+                ),
                 group_by=[GroupByCanonicalField(field="FIRST_CONTACT_PLACE")],
                 metrics=[
                     MetricSpec(
@@ -79,6 +130,7 @@ def example_dtn_line_basic() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
                 group_by=None,
                 metrics=[
                     MetricSpec(
@@ -108,6 +160,7 @@ def example_dtn_histogram_custom_buckets() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="HISTOGRAM",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
                 numericResolution=NumericResolutionSpec.model_validate(
                     {
                         "valueDomain": {"lowerBound": 0, "upperBound": 180},
@@ -134,6 +187,7 @@ def example_dtn_males_only_filter() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
                 filters=SexFilter(value="MALE"),
                 group_by=None,
                 metrics=[MetricSpec(metric="DTN")],
@@ -155,6 +209,7 @@ def example_dtn_females_only_filter() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
                 filters=SexFilter(value="FEMALE"),
                 group_by=None,
                 metrics=[MetricSpec(metric="DTN")],
@@ -181,6 +236,15 @@ def example_dtn_by_sex_and_stroke() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="BAR",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[
+                        SplitSpec(kind="SEX", categories=["MALE", "FEMALE"]),
+                        SplitSpec(kind="STROKE_TYPE", categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]),
+                    ],
+                ),
                 group_by=[
                     GroupBySex(categories=["MALE", "FEMALE"]),
                     GroupByStrokeType(),
@@ -206,6 +270,15 @@ def example_one_graph_cross_split() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[
+                        SplitSpec(kind="SEX", categories=["MALE", "FEMALE"]),
+                        SplitSpec(kind="STROKE_TYPE", categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]),
+                    ],
+                ),
                 group_by=[
                     GroupBySex(categories=["MALE", "FEMALE"]),
                     GroupByStrokeType(
@@ -236,11 +309,23 @@ def example_two_separate_charts() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="DISTRIBUTION",
+                    measure="DISTRIBUTION",
+                    splits=[SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+                ),
                 group_by=[GroupBySex(categories=["MALE", "FEMALE"])],
                 metrics=[MetricSpec(metric="DTN")],
             ),
             ChartSpec(
                 chart_type="BAR",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="STROKE_TYPE", categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"])],
+                ),
                 group_by=[
                     GroupByStrokeType(
                         categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]
@@ -270,6 +355,13 @@ def example_dtn_last_6_months_by_sex() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="TREND",
+                    measure="MEAN",
+                    splits=[SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+                    time_grain="MONTH",
+                ),
                 group_by=[
                     GroupByTime(
                         grain="MONTH", window=TimeWindow(last_n=6, unit="MONTH")
@@ -391,6 +483,7 @@ def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="BAR",
+                semantics=_semantics(metric="DTN", intent="COMPARISON", measure="MEDIAN"),
                 group_by=None,
                 metrics=[
                     MetricSpec(
@@ -431,6 +524,7 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="BAR",
+                semantics=_semantics(metric="DTN", intent="COMPARISON", measure="MEDIAN"),
                 group_by=None,
                 metrics=[
                     MetricSpec(
@@ -503,6 +597,7 @@ def example_dtn_year_filter() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="BAR",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
                 filters=DateFilter(operator="GE", value="2026-01-01"),
                 group_by=None,
                 metrics=[MetricSpec(metric="DTN")],
@@ -528,6 +623,7 @@ def example_dtn_quarterly() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="TREND", measure="MEAN", time_grain="QUARTER"),
                 group_by=[GroupByTime(grain="QUARTER")],
                 metrics=[MetricSpec(metric="DTN")],
             )
@@ -552,6 +648,7 @@ def example_dtn_monthly() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="TREND", measure="MEAN", time_grain="MONTH"),
                 group_by=[GroupByTime(grain="MONTH")],
                 metrics=[MetricSpec(metric="DTN")],
             )
@@ -576,6 +673,7 @@ def example_dtn_ischemic_only_filter() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
                 filters=StrokeFilter(value="ISCHEMIC"),
                 group_by=None,
                 metrics=[MetricSpec(metric="DTN")],
@@ -597,6 +695,7 @@ def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="TREND", measure="MEAN", time_grain="QUARTER"),
                 filters=AndFilter(
                     and_=[
                         StrokeFilter(value="ISCHEMIC"),

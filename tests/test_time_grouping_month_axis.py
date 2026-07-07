@@ -9,7 +9,11 @@ def test_compile_chart_grouping_derives_month_periods_from_date_filters() -> Non
     chart = S.ChartSpec(
         chart_type="LINE",
         metrics=[S.MetricSpec(metric="DTN")],
-        group_by=[S.GroupByTime(grain="MONTH")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(grain="MONTH"),
+        ),
         filters=S.AndFilter(
             and_=[
                 S.DateFilter(type="DateFilter", operator="GE", value="2022-10-01"),
@@ -87,10 +91,12 @@ def test_compile_chart_grouping_month_and_sex_defaults_to_recent_12_months() -> 
     chart = S.ChartSpec(
         chart_type="LINE",
         metrics=[S.MetricSpec(metric="DTN")],
-        group_by=[
-            S.GroupByTime(grain="MONTH"),
-            S.GroupBySex(categories=["MALE", "FEMALE"]),
-        ],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(grain="MONTH"),
+            splits=[S.SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+        ),
     )
 
     compiled = compile_chart_grouping(chart)

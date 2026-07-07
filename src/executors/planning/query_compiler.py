@@ -18,6 +18,7 @@ from src.domain.graphql.ssot_enums import GroupByType, Operator, SexType, Stroke
 from src.domain.langchain import schema as S
 from src.domain.langchain.schema import (
     GroupByAge,
+    GroupByBoolean,
     GroupByCanonicalField,
     GroupByNIHSS,
     GroupBySex,
@@ -29,6 +30,84 @@ from src.shared.ssot_loader import get_sex_label, get_stroke_label
 from src.util.coalesce import coalesce
 
 logger = logging.getLogger(__name__)
+
+
+def _bool_values_from_categories(categories: Optional[List[str]]) -> Optional[List[bool]]:
+    if not categories:
+        return None
+
+    out: List[bool] = []
+    for raw in categories:
+        token = (raw or "").strip().lower()
+        if token in {"true", "1", "yes", "y"}:
+            out.append(True)
+        elif token in {"false", "0", "no", "n"}:
+            out.append(False)
+        else:
+            raise ValueError(
+                f"Invalid BOOLEAN split category '{raw}'. Expected one of true/false, yes/no, 1/0"
+            )
+    return out
+
+
+def _group_by_from_semantics(chart: S.ChartSpec) -> Optional[List[GroupBySpec]]:
+    semantics = chart.semantics
+    if semantics is None:
+        return None
+
+    groups: List[GroupBySpec] = []
+
+    if semantics.time is not None and semantics.time.grain is not None:
+        groups.append(
+            GroupByTime(
+                grain=semantics.time.grain,
+                window=semantics.time.window,
+                include_partial=semantics.time.include_partial,
+            )
+        )
+
+    for split in semantics.splits or []:
+        kind = split.kind
+
+        if kind == "SEX":
+            groups.append(GroupBySex(categories=split.categories))
+            continue
+
+        if kind == "STROKE_TYPE":
+            groups.append(GroupByStrokeType(categories=split.categories))
+            continue
+
+        if kind == "CANONICAL":
+            if not split.field:
+                raise ValueError("Semantic split kind CANONICAL requires split.field")
+            groups.append(GroupByCanonicalField(field=split.field, values=split.categories))
+            continue
+
+        if kind == "BOOLEAN":
+            if not split.field:
+                raise ValueError("Semantic split kind BOOLEAN requires split.field")
+            groups.append(
+                GroupByBoolean(
+                    boolean_type=split.field,
+                    values=_bool_values_from_categories(split.categories),
+                )
+            )
+            continue
+
+        if kind == "AGE":
+            groups.append(GroupByCanonicalField(field="AGE", values=split.categories))
+            continue
+
+        if kind == "NIHSS":
+            groups.append(GroupByCanonicalField(field="ADMISSION_NIHSS", values=split.categories))
+            continue
+
+        if kind == "CUSTOM":
+            raise ValueError("Semantic split kind CUSTOM is not supported by retrieval compiler yet")
+
+        raise ValueError(f"Unsupported semantic split kind: {kind}")
+
+    return groups
 
 
 def _collect_lc_date_bounds(node: Any) -> tuple[Optional[str], Optional[str]]:
@@ -468,7 +547,14 @@ class CompiledChartGrouping:
 
 
 def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
-    collected_groups: List[GroupBySpec] = list(coalesce(chart.group_by, []))
+    semantics = chart.semantics
+    if semantics is None:
+        raise ValueError("Chart semantics are required for retrieval compilation")
+    if semantics.measure is None:
+        raise ValueError("Chart semantics.measure is required for retrieval compilation")
+
+    semantic_groups = _group_by_from_semantics(chart)
+    collected_groups: List[GroupBySpec] = list(semantic_groups or [])
 
     seen: set[GroupBySpec] = set()
     uniq_groups: List[GroupBySpec] = []

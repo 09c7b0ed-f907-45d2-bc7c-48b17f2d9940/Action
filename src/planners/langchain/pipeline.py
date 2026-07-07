@@ -61,7 +61,7 @@ _PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
 _MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v3"
+_PLAN_CACHE_KEY_VERSION = "v4"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
@@ -157,6 +157,19 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         raise ValueError("Model output JSON must be an object")
     _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
+
+
+def _assert_required_semantics(plan: AnalysisPlan) -> None:
+    charts = plan.charts or []
+    for idx, chart in enumerate(charts):
+        if chart.semantics is None:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}] is missing required semantics"
+            )
+        if chart.semantics.measure is None:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}].semantics.measure is required"
+            )
 
 
 def get_schema_description(model: Type[Any]) -> str:
@@ -446,6 +459,8 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
         (
             "system",
             "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
+            "For every chart, you MUST include a semantics object with intent, measure, and any relevant splits/time semantics. "
+            "During transition, keep existing fields (chart_type, group_by, filters, metrics) aligned with semantics so current execution remains deterministic. "
             "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
             "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
             "When scope is semantic (my hospital, hospital name, provider-group name, country average, all accessible), prefer metric-level originScope instead of dataOrigin. "
@@ -623,6 +638,7 @@ def generate_analysis_plan(
 
             try:
                 result = _coerce_analysis_plan(raw_result)
+                _assert_required_semantics(result)
                 break
             except Exception as exc:
                 last_error = exc

@@ -18,7 +18,7 @@ from src.domain.graphql.request import IntegerFilter as GQLIntegerFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.request import SexFilter as GQLSexFilter
 from src.domain.graphql.request import StrokeFilter as GQLStrokeFilter
-from src.domain.langchain.schema import AnalysisPlan, GroupBySpec, StatisticalTestSpec
+from src.domain.langchain.schema import AnalysisPlan, StatisticalTestSpec
 from src.executors.graphql.client import GraphQLProxyClient
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.filter_mapper import to_gql_filter
@@ -41,9 +41,7 @@ from src.executors.planning.query_compiler import (
 )
 from src.executors.planning.request_plan import (
     RequestSpec,
-    build_fallback_request_specs,
     build_primary_request_specs,
-    should_retry_unbatched_time,
 )
 from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import (
@@ -61,9 +59,6 @@ logger = logging.getLogger(__name__)
 _LOG_GRAPHQL_QUERY = env_util.env_flag("EXECUTOR_LOG_GRAPHQL_QUERY", default=False)
 _EMIT_COMPILER_DIAGNOSTICS = env_util.env_flag(
     "EXECUTOR_EMIT_COMPILER_DIAGNOSTICS", default=False
-)
-_ENABLE_UNBATCHED_TIME_FALLBACK = env_util.env_flag(
-    "EXECUTOR_ENABLE_UNBATCHED_TIME_FALLBACK", default=True
 )
 _STRICT_MODE = env_util.env_flag(
     "ANALYTICS_STRICT_MODE", default=False
@@ -281,16 +276,6 @@ def _default_time_period_from_filter(filter_obj: Optional[Any]) -> Dict[str, str
     }
 
 
-def _merge_case_filters(
-    base_filter: Optional[Any], cohort_filter: Optional[Any]
-) -> Optional[Any]:
-    if base_filter is None:
-        return cohort_filter
-    if cohort_filter is None:
-        return base_filter
-    return GQLLogicalFilter(operator="AND", children=[base_filter, cohort_filter])
-
-
 # Adaptation layer for GraphQL filter objects to the statistical test payload format. This is necessary because the GraphQL API expects a specific structure for filters.
 def _serialize_case_filter_input(filter_obj: Optional[Any]) -> Optional[Dict[str, Any]]:
     if filter_obj is None:
@@ -377,33 +362,6 @@ def _serialize_case_filter_input(filter_obj: Optional[Any]) -> Optional[Dict[str
             }
         },
     )
-    return None
-
-
-def _cohort_split_from_groupby(
-    group_by: Optional[List[GroupBySpec]],
-) -> Optional[tuple[Dimension, Any, Any, str, str]]:
-    if not group_by:
-        return None
-
-    for spec in group_by:
-        dim = Dimension(spec)
-        cats = list(dim.categories())
-        if not cats:
-            continue
-
-        if len(cats) < 2:
-            continue
-
-        c_a = cats[0]
-        c_b = cats[1]
-        f_a = dim.filter_for(c_a)
-        f_b = dim.filter_for(c_b)
-        if f_a is None or f_b is None:
-            continue
-
-        return dim, c_a, c_b, dim.label_for(c_a), dim.label_for(c_b)
-
     return None
 
 
@@ -841,45 +799,28 @@ def _execute_mann_whitney_test(
         ):
             label_b = metric_b_scope.label.strip()
     else:
-        # Backward-compatible fallback: derive cohorts from two-way group_by split.
-        cohort_split = _cohort_split_from_groupby(test.group_by)
-        if cohort_split is None:
-            reason = "Could not determine two distinct cohorts for comparison"
-            logger.warning(
-                "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
-                reason,
-                extra={
-                    "log_context": {
-                        "trace_id": trace_id or "-",
-                        "event": "plan_executor.statistical_test.skipped_missing_cohorts",
-                        "operation": "_execute_mann_whitney_test",
-                        "outcome": "degraded",
-                        "test_type": "MANN_WHITNEY_U_TEST",
-                    }
-                },
+        reason = "MANN_WHITNEY_U_TEST requires two explicit metric cohorts"
+        logger.warning(
+            "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
+            reason,
+            extra={
+                "log_context": {
+                    "trace_id": trace_id or "-",
+                    "event": "plan_executor.statistical_test.skipped_missing_cohorts",
+                    "operation": "_execute_mann_whitney_test",
+                    "outcome": "degraded",
+                    "test_type": "MANN_WHITNEY_U_TEST",
+                }
+            },
+        )
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason=reason,
+                title="Mann-Whitney U Test: skipped",
             )
-            return [
-                StatisticalTestResult(
-                    test_type="MANN_WHITNEY_U_TEST",
-                    status="skipped",
-                    reason=reason,
-                    title="Mann-Whitney U Test: skipped",
-                )
-            ]
-
-        dim, cat_a, cat_b, label_a_split, label_b_split = cohort_split
-        cohort_filter_a = _merge_case_filters(base_filter, dim.filter_for(cat_a))
-        cohort_filter_b = _merge_case_filters(base_filter, dim.filter_for(cat_b))
-        shared_origin = (
-            metric_a_origin or metric_b_origin or _build_default_data_origin()
-        )
-        data_origin_payload_default = cast(Any, shared_origin).model_dump(
-            by_alias=True, exclude_none=True
-        )
-        data_origin_payload_a = data_origin_payload_default
-        data_origin_payload_b = data_origin_payload_default
-        label_a = label_a_split
-        label_b = label_b_split
+        ]
 
     time_period_payload = _default_time_period_from_filter(base_filter)
     origin_a = data_origin_payload_a or _build_default_data_origin().model_dump(
@@ -1498,12 +1439,11 @@ async def execute_plan_async(
             combos_list = batch.combos_list
 
             gb_field = batch.server_groupby
-            fallback_specs: List[RequestSpec] = []
             include_metric_alias = len(planChart.metrics) > 1
 
             chart_filter = to_gql_filter(coalesce(planChart.filters, None))
 
-            primary_specs, combo_contexts = build_primary_request_specs(
+            primary_specs = build_primary_request_specs(
                 metric_requests=metric_requests,
                 metric_data_origins=metric_data_origins,
                 chart_filter=chart_filter,
@@ -1558,57 +1498,7 @@ async def execute_plan_async(
             )
             all_series = [item for result in request_results for item in result.series]
 
-            if (
-                _ENABLE_UNBATCHED_TIME_FALLBACK
-                and not _STRICT_MODE
-                and should_retry_unbatched_time(
-                    all_series=all_series,
-                    request_failures=request_failures,
-                    batched_time_enabled=batched_time_enabled,
-                    batched_time_periods=batched_time_periods,
-                )
-            ):
-                logger.warning(
-                    "[plan_executor] Batched multi-period request timed out; retrying with per-period requests (period_count=%s, combos=%s)",
-                    len(batched_time_periods),
-                    len(combo_contexts),
-                    extra={
-                        "log_context": {
-                            "trace_id": trace_id_resolved,
-                            "event": "plan_executor.unbatched_time_fallback",
-                            "operation": "execute_plan_async",
-                            "outcome": "degraded",
-                            "batched_time_period_count": len(batched_time_periods),
-                            "combo_count": len(combo_contexts),
-                            "request_failure_count": len(request_failures),
-                        }
-                    },
-                )
-                request_failures.clear()
-
-                fallback_specs = build_fallback_request_specs(
-                    combo_contexts=combo_contexts,
-                    batched_time_periods=batched_time_periods,
-                )
-
-                retry_count = max(1, len(fallback_specs))
-                actual_queries += retry_count
-                request_results = await _execute_specs_sequential(
-                    specs=fallback_specs,
-                    request_failures=request_failures,
-                    request_warnings=request_warnings,
-                    context=execution_context,
-                    trace_id=trace_id_resolved,
-                    total_requests=retry_count,
-                    progress_prefix="Retrying with per-period requests",
-                )
-                all_series = [
-                    item for result in request_results for item in result.series
-                ]
-
             sampled_period_override = _sampled_period_from_specs(primary_specs)
-            if sampled_period_override is None and fallback_specs:
-                sampled_period_override = _sampled_period_from_specs(fallback_specs)
 
             # Surface partial-result scenarios (some scopes returned no rows) without failing whole chart.
             empty_scope_labels = [
