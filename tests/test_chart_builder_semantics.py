@@ -16,6 +16,12 @@ class ChartBuilderSemanticsTests(unittest.TestCase):
                 measure=S.MeasureSemanticsSpec(type="MEAN"),
                 time=S.TimeSemanticsSpec(grain="MONTH"),
             ),
+            filters=S.AndFilter(
+                and_=[
+                    S.DateFilter(type="DateFilter", operator="GE", value="2023-01-01"),
+                    S.DateFilter(type="DateFilter", operator="LE", value="2023-12-31"),
+                ]
+            ),
         )
 
         compiled = compile_chart_grouping(chart)
@@ -48,6 +54,17 @@ class ChartBuilderSemanticsTests(unittest.TestCase):
         )
 
         self.assertTrue(dto.smooth)
+
+    def test_unsupported_chart_type_is_rejected_by_schema(self) -> None:
+        with self.assertRaises(ValueError):
+            S.ChartSpec(
+                chart_type="UNSUPPORTED_SHAPE",
+                metrics=[S.MetricSpec(metric="DTN")],
+                semantics=S.AnalysisSemanticsSpec(
+                    intent="COMPARISON",
+                    measure=S.MeasureSemanticsSpec(type="MEAN"),
+                ),
+            )
 
 
 if __name__ == "__main__":

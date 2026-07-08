@@ -1,109 +1,132 @@
 from types import SimpleNamespace
+import unittest
 
 from src.domain.langchain import schema as S
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.executors.planning.query_compiler import compile_chart_grouping
 
 
-def test_compile_chart_grouping_derives_month_periods_from_date_filters() -> None:
-    chart = S.ChartSpec(
-        chart_type="LINE",
-        metrics=[S.MetricSpec(metric="DTN")],
-        semantics=S.AnalysisSemanticsSpec(
-            intent="TREND",
-            measure=S.MeasureSemanticsSpec(type="MEAN"),
-            time=S.TimeSemanticsSpec(grain="MONTH"),
-        ),
-        filters=S.AndFilter(
-            and_=[
-                S.DateFilter(type="DateFilter", operator="GE", value="2022-10-01"),
-                S.DateFilter(type="DateFilter", operator="LE", value="2023-09-30"),
-            ]
-        ),
-    )
+class TimeGroupingMonthAxisTests(unittest.TestCase):
+    def test_compile_chart_grouping_derives_month_periods_from_date_filters(self) -> None:
+        chart = S.ChartSpec(
+            chart_type="LINE",
+            metrics=[S.MetricSpec(metric="DTN")],
+            semantics=S.AnalysisSemanticsSpec(
+                intent="TREND",
+                measure=S.MeasureSemanticsSpec(type="MEAN"),
+                time=S.TimeSemanticsSpec(grain="MONTH"),
+            ),
+            filters=S.AndFilter(
+                and_=[
+                    S.DateFilter(type="DateFilter", operator="GE", value="2022-10-01"),
+                    S.DateFilter(type="DateFilter", operator="LE", value="2023-09-30"),
+                ]
+            ),
+        )
 
-    compiled = compile_chart_grouping(chart)
-    assert len(compiled.batches) == 1
+        compiled = compile_chart_grouping(chart)
+        self.assertEqual(len(compiled.batches), 1)
 
-    batch = compiled.batches[0]
-    assert batch.batched_time_enabled is True
-    assert len(batch.batched_time_periods) == 12
-    assert batch.batched_time_periods[0].start_date == "2022-10-01"
-    assert batch.batched_time_periods[-1].end_date == "2023-09-30"
+        batch = compiled.batches[0]
+        self.assertTrue(batch.batched_time_enabled)
+        self.assertEqual(len(batch.batched_time_periods), 12)
+        self.assertEqual(batch.batched_time_periods[0].start_date, "2022-10-01")
+        self.assertEqual(batch.batched_time_periods[-1].end_date, "2023-09-30")
+
+    def test_map_metrics_payload_to_series_uses_month_label_for_time_periods(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(
+                median=None,
+                mean=14.0,
+                case_count=[],
+                d1=None,
+            ),
+            grouped_by=None,
+            time_period=SimpleNamespace(start_date="2023-02-01", end_date="2023-02-28"),
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=[],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=True,
+        )
+
+        self.assertEqual(len(series), 1)
+        self.assertEqual(len(series[0].data), 1)
+        self.assertEqual(series[0].data[0].x, "2023-02")
+
+    def test_map_metrics_payload_to_series_emits_missing_time_point_as_null(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(
+                median=None,
+                mean=None,
+                case_count=[],
+                d1=None,
+            ),
+            grouped_by=None,
+            time_period=SimpleNamespace(start_date="2023-03-01", end_date="2023-03-31"),
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=[],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=True,
+        )
+
+        self.assertEqual(len(series), 1)
+        self.assertEqual(len(series[0].data), 1)
+        self.assertEqual(series[0].data[0].x, "2023-03")
+        self.assertIsNone(series[0].data[0].y)
+
+    def test_map_metrics_payload_to_series_does_not_infer_grouped_mode_from_label_parts_only(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(
+                median=14.0,
+                mean=None,
+                case_count=[],
+                d1=None,
+            ),
+            grouped_by=None,
+            time_period=None,
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=["MALE"],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=False,
+        )
+
+        # Without explicit group_by_field or time labels, mapper should not infer grouped mode.
+        self.assertEqual(len(series), 0)
+
+    def test_compile_chart_grouping_month_and_sex_requires_explicit_temporal_bounds(self) -> None:
+        chart = S.ChartSpec(
+            chart_type="LINE",
+            metrics=[S.MetricSpec(metric="DTN")],
+            semantics=S.AnalysisSemanticsSpec(
+                intent="TREND",
+                measure=S.MeasureSemanticsSpec(type="MEAN"),
+                time=S.TimeSemanticsSpec(grain="MONTH"),
+                splits=[S.SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+            ),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            compile_chart_grouping(chart)
+        self.assertIn("explicit time window/range", str(ctx.exception))
 
 
-def test_map_metrics_payload_to_series_uses_month_label_for_time_periods() -> None:
-    kpi = SimpleNamespace(
-        kpi1=SimpleNamespace(
-            median=None,
-            mean=14.0,
-            case_count=[],
-            d1=None,
-        ),
-        grouped_by=None,
-        time_period=SimpleNamespace(start_date="2023-02-01", end_date="2023-02-28"),
-        data_origin=None,
-    )
-    metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
-
-    series = map_metrics_payload_to_series(
-        metrics_payload=metric_payload,
-        label_parts=[],
-        include_metric_alias=True,
-        group_by_field=None,
-        add_time_period_labels=True,
-    )
-
-    assert len(series) == 1
-    assert len(series[0].data) == 1
-    assert series[0].data[0].x == "2023-02"
-
-
-def test_map_metrics_payload_to_series_emits_missing_time_point_as_null() -> None:
-    kpi = SimpleNamespace(
-        kpi1=SimpleNamespace(
-            median=None,
-            mean=None,
-            case_count=[],
-            d1=None,
-        ),
-        grouped_by=None,
-        time_period=SimpleNamespace(start_date="2023-03-01", end_date="2023-03-31"),
-        data_origin=None,
-    )
-    metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
-
-    series = map_metrics_payload_to_series(
-        metrics_payload=metric_payload,
-        label_parts=[],
-        include_metric_alias=True,
-        group_by_field=None,
-        add_time_period_labels=True,
-    )
-
-    assert len(series) == 1
-    assert len(series[0].data) == 1
-    assert series[0].data[0].x == "2023-03"
-    assert series[0].data[0].y is None
-
-
-def test_compile_chart_grouping_month_and_sex_defaults_to_recent_12_months() -> None:
-    chart = S.ChartSpec(
-        chart_type="LINE",
-        metrics=[S.MetricSpec(metric="DTN")],
-        semantics=S.AnalysisSemanticsSpec(
-            intent="TREND",
-            measure=S.MeasureSemanticsSpec(type="MEAN"),
-            time=S.TimeSemanticsSpec(grain="MONTH"),
-            splits=[S.SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
-        ),
-    )
-
-    compiled = compile_chart_grouping(chart)
-    assert len(compiled.batches) == 1
-
-    batch = compiled.batches[0]
-    assert batch.batched_time_enabled is True
-    assert len(batch.batched_time_periods) == 12
-    # Split-by-sex remains as filter-driven series fan-out on one chart.
-    assert len(batch.combos_list) == 2
+if __name__ == "__main__":
+    unittest.main()

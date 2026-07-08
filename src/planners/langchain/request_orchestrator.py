@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import AnalysisPlan, ChartType
+from src.domain.langchain.schema import AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import generate_analysis_plan
 from src.shared import ssot_loader
@@ -280,6 +280,212 @@ def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> boo
     return any(keyword in question_norm for keyword in _STAT_TEST_KEYWORDS)
 
 
+def _extract_string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        token = value.strip()
+        return [token] if token else []
+    if isinstance(value, list):
+        out: List[str] = []
+        for item in cast(List[Any], value):
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+    return []
+
+
+def _extract_provider_group_ids(entities: Dict[str, Any]) -> List[int]:
+    raw_values = _extract_string_list(entities.get("provider_group_id"))
+    out: List[int] = []
+    for token in raw_values:
+        for match in re.findall(r"\d+", token):
+            try:
+                group_id = int(match)
+            except Exception:
+                continue
+            if group_id > 0 and group_id not in out:
+                out.append(group_id)
+    return out
+
+
+def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
+    metrics = _extract_string_list(entities.get("metric"))
+    if not metrics:
+        return None
+    return metrics[0].upper()
+
+
+def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
+    date_values = [d for d in _extract_string_list(entities.get("date")) if re.match(r"^\d{4}-\d{2}-\d{2}$", d)]
+    if len(date_values) < 2:
+        return None
+    ordered = sorted(set(date_values))
+    if len(ordered) < 2:
+        return None
+    return ordered[0], ordered[-1]
+
+
+def _coerce_origin_scope(scope_type: str, value: Any = None, label: Optional[str] = None, country_code: Optional[str] = None) -> OriginScopeSpec:
+    payload: Dict[str, Any] = {"scopeType": scope_type}
+    if value is not None:
+        payload["value"] = value
+    if label is not None:
+        payload["label"] = label
+    if country_code is not None:
+        payload["countryCode"] = country_code
+    return OriginScopeSpec.model_validate(payload)
+
+
+def _extract_semantic_scopes(entities: Dict[str, Any]) -> List[OriginScopeSpec]:
+    scopes: List[OriginScopeSpec] = []
+
+    if entities.get("mine"):
+        scopes.append(_coerce_origin_scope("mine", label="mine"))
+
+    provider_names = _extract_string_list(entities.get("provider_name"))
+    for provider_name in provider_names:
+        scopes.append(_coerce_origin_scope("provider_name", value=provider_name, label=provider_name))
+
+    provider_group_names = _extract_string_list(entities.get("provider_group_name"))
+    for provider_group_name in provider_group_names:
+        scopes.append(_coerce_origin_scope("provider_group_name", value=provider_group_name, label=provider_group_name))
+
+    country_codes = _extract_string_list(entities.get("country_code"))
+    for country_code in country_codes:
+        scopes.append(_coerce_origin_scope("country_code", value=country_code, country_code=country_code, label=country_code))
+
+    if entities.get("country_average"):
+        country_average_values = _extract_string_list(entities.get("country_average"))
+        if country_average_values:
+            for country_code in country_average_values:
+                scopes.append(_coerce_origin_scope("country_average", value=country_code, country_code=country_code, label=country_code))
+        else:
+            scopes.append(_coerce_origin_scope("country_average", label="country average"))
+
+    return scopes
+
+
+def _build_deterministic_statistical_plan(
+    question: str,
+    entities: Dict[str, Any],
+) -> Optional[AnalysisPlan]:
+    if not _has_statistical_test_signal(question, entities):
+        return None
+
+    metric = _extract_metric_code(entities)
+    provider_group_ids = _extract_provider_group_ids(entities)
+    semantic_scopes = _extract_semantic_scopes(entities)
+    bounds = _extract_date_bounds(entities)
+
+    if metric is None or bounds is None:
+        return None
+
+    start_date, end_date = bounds
+    metrics: List[MetricSpec]
+
+    if len(semantic_scopes) >= 2:
+        metrics = [
+            MetricSpec(metric=metric, originScope=semantic_scopes[0]),
+            MetricSpec(metric=metric, originScope=semantic_scopes[1]),
+        ]
+    elif len(provider_group_ids) >= 2:
+        cohort_a = provider_group_ids[0]
+        cohort_b = provider_group_ids[1]
+        metrics = [
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerGroupId=[cohort_a])),
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerGroupId=[cohort_b])),
+        ]
+    else:
+        return None
+
+    return AnalysisPlan(
+        charts=None,
+        statistical_tests=[
+            StatisticalTestSpec(
+                test_type="MANN_WHITNEY_U_TEST",
+                metrics=metrics,
+                filters=AndFilter(
+                    and_=[
+                        DateFilter(operator="GE", value=start_date),
+                        DateFilter(operator="LE", value=end_date),
+                    ]
+                ),
+            )
+        ],
+    )
+
+
+def _has_distinct_metric_cohorts(metric_a: Optional[Any], metric_b: Optional[Any]) -> bool:
+    if metric_a is None or metric_b is None:
+        return False
+
+    metric_a_origin = getattr(metric_a, "data_origin", None)
+    metric_b_origin = getattr(metric_b, "data_origin", None)
+    metric_a_scope = getattr(metric_a, "origin_scope", None)
+    metric_b_scope = getattr(metric_b, "origin_scope", None)
+
+    if metric_a_origin is not None and metric_b_origin is not None:
+        origin_a_payload = metric_a_origin.model_dump(by_alias=True, exclude_none=True)
+        origin_b_payload = metric_b_origin.model_dump(by_alias=True, exclude_none=True)
+        if origin_a_payload != origin_b_payload:
+            return True
+
+    if metric_a_scope is not None and metric_b_scope is not None:
+        scope_a_payload = metric_a_scope.model_dump(by_alias=True, exclude_none=True)
+        scope_b_payload = metric_b_scope.model_dump(by_alias=True, exclude_none=True)
+        if scope_a_payload != scope_b_payload:
+            return True
+
+    if metric_a_origin is None or metric_b_origin is None:
+        return False
+
+    label_a = getattr(metric_a_scope, "label", None)
+    label_b = getattr(metric_b_scope, "label", None)
+    if isinstance(label_a, str) and isinstance(label_b, str):
+        return bool(label_a.strip() and label_b.strip() and label_a.strip() != label_b.strip())
+
+    return False
+
+
+def _validate_statistical_plan_readiness(plan: AnalysisPlan) -> Optional[VisualizationRequestOutcome]:
+    tests = list(plan.statistical_tests or [])
+    if not tests:
+        return None
+
+    for test in tests:
+        test_type = (test.test_type or "").upper().strip()
+        if test_type != "MANN_WHITNEY_U_TEST":
+            continue
+
+        metrics = list(test.metrics or [])
+        if len(metrics) < 2:
+            return VisualizationRequestOutcome(
+                decision="clarify",
+                reason="missing_statistical_cohorts",
+                message=(
+                    "I can run Mann-Whitney U only with two explicit cohorts. "
+                    "Please provide cohort A and cohort B to compare."
+                ),
+                clarification_type="analysis_plan",
+                clarification_options=[],
+                missing_fields=["statistical_cohorts"],
+            )
+
+        if not _has_distinct_metric_cohorts(metrics[0], metrics[1]):
+            return VisualizationRequestOutcome(
+                decision="clarify",
+                reason="missing_statistical_cohorts",
+                message=(
+                    "Mann-Whitney U requires two distinct cohorts. Please provide "
+                    "different cohort filters or scopes for each comparison group."
+                ),
+                clarification_type="analysis_plan",
+                clarification_options=[],
+                missing_fields=["statistical_cohorts"],
+            )
+
+    return None
+
+
 def _decision_stage(
     question: str,
     entities: Dict[str, Any],
@@ -402,6 +608,17 @@ def orchestrate_visualization_request(
                     joined = "\n".join(f"- {item}" for item in cleaned_history)
                     planner_question = f"Conversation context (oldest to newest user turns):\n{joined}\n\nCurrent request to fulfill:\n{question}"
 
+            deterministic_plan = _build_deterministic_statistical_plan(planner_question, entities)
+            if deterministic_plan is not None:
+                stats_validation = _validate_statistical_plan_readiness(deterministic_plan)
+                if stats_validation is not None:
+                    return stats_validation
+                return VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="deterministic_statistical_plan",
+                    plan=deterministic_plan,
+                )
+
             plan = generate_analysis_plan(
                 question=planner_question,
                 entities=entities,
@@ -411,6 +628,11 @@ def orchestrate_visualization_request(
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
+
+            stats_validation = _validate_statistical_plan_readiness(plan)
+            if stats_validation is not None:
+                return stats_validation
+
             return VisualizationRequestOutcome(
                 decision="proceed",
                 reason=stage1.reason or "sufficient_information",
@@ -459,5 +681,11 @@ def orchestrate_visualization_request(
             return VisualizationRequestOutcome(
                 decision="clarify",
                 reason="orchestrator_failed",
-                message="I need a bit more detail before I can continue.",
+                message=(
+                    "I could not produce a valid statistical plan from that request. "
+                    "Please provide a metric, two explicit cohorts (for example two provider groups), "
+                    "and explicit date bounds."
+                    if _has_statistical_test_signal(question, entities)
+                    else "I need a bit more detail before I can continue."
+                ),
             )

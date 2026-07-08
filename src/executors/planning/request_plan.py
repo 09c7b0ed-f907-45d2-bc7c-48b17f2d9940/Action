@@ -14,42 +14,6 @@ from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.ssot_enums import GroupByType
 from src.executors.planning.query_compiler import Dimension
-from src.util import env as env_util
-
-
-def _parse_int_csv(raw: str) -> List[int]:
-    out: List[int] = []
-    for part in (raw or "").split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            out.append(int(token))
-        except Exception:
-            continue
-    return out
-
-
-_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1")
-_DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or "")
-_INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
-
-
-def _build_data_origin(override: Optional[DataOrigin] = None) -> DataOrigin:
-    if override is not None:
-        return override
-
-    provider_group_ids = list(_DEFAULT_PROVIDER_GROUP_IDS)
-    provider_ids = list(_DEFAULT_PROVIDER_IDS)
-    if not provider_group_ids and not provider_ids:
-        provider_group_ids = [1]
-
-    kwargs: dict[str, Any] = {}
-    if provider_group_ids:
-        kwargs["providerGroupId"] = provider_group_ids
-    if provider_ids:
-        kwargs["providerId"] = provider_ids
-    return DataOrigin(**kwargs)
 
 
 @dataclass
@@ -127,6 +91,7 @@ def build_primary_request_specs(
     group_by_field: Optional[str],
     metric_scope_labels: Optional[Sequence[Optional[str]]] = None,
     data_origin: Optional[DataOrigin] = None,
+    include_general_stats: bool = False,
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
     per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
@@ -147,11 +112,14 @@ def build_primary_request_specs(
                 scope_label = metric_scope_labels[idx] if metric_scope_labels and idx < len(metric_scope_labels) else None
                 effective_scope_label = scope_label.strip() if isinstance(scope_label, str) and scope_label.strip() else None
 
+                if metric_origin is None:
+                    raise ValueError("Request planning requires explicit metric or chart data origin")
+
                 req = GraphQLQueryRequest(
                     metrics=[metric_request],
                     timePeriod=req_time_period,
-                    dataOrigin=_build_data_origin(metric_origin),
-                    includeGeneralStats=_INCLUDE_GENERAL_STATS,
+                    dataOrigin=metric_origin,
+                    includeGeneralStats=include_general_stats,
                     caseFilter=case_filter,
                     groupBy=(GroupByType(group_by_field) if group_by_field else None),
                 )
@@ -168,11 +136,14 @@ def build_primary_request_specs(
                     )
                 )
         else:
+            if data_origin is None:
+                raise ValueError("Request planning requires explicit chart data origin")
+
             req = GraphQLQueryRequest(
                 metrics=metric_requests,
                 timePeriod=req_time_period,
-                dataOrigin=_build_data_origin(data_origin),
-                includeGeneralStats=_INCLUDE_GENERAL_STATS,
+                dataOrigin=data_origin,
+                includeGeneralStats=include_general_stats,
                 caseFilter=case_filter,
                 groupBy=(GroupByType(group_by_field) if group_by_field else None),
             )

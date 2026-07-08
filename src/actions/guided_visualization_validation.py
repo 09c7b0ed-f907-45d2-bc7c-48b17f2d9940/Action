@@ -548,6 +548,46 @@ def _optional_slot_value(slots: Dict[str, Any], name: str) -> Optional[str]:
     return text
 
 
+def _default_semantic_intent(chart_type: str, has_time_grain: bool) -> str:
+    token = (chart_type or "").strip().upper()
+    if has_time_grain:
+        return "TREND"
+    if token == "HISTOGRAM":
+        return "DISTRIBUTION"
+    if token == "BAR":
+        return "COMPARISON"
+    return "DISTRIBUTION"
+
+
+def _default_semantic_measure(has_time_grain: bool) -> str:
+    if has_time_grain:
+        return "MEAN"
+    return "DISTRIBUTION"
+
+
+def _semantic_grouping(group_by_value: Optional[str]) -> tuple[Optional[S.TimeSemanticsSpec], Optional[List[S.SplitSpec]]]:
+    if not isinstance(group_by_value, str) or not group_by_value.strip():
+        return None, None
+
+    token = group_by_value.strip().upper()
+    if token in {"DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}:
+        return S.TimeSemanticsSpec(grain=token), None
+
+    if token == "SEX":
+        return None, [S.SplitSpec(kind="SEX")]
+
+    if token == "STROKE_TYPE":
+        return None, [S.SplitSpec(kind="STROKE_TYPE")]
+
+    if token == "AGE":
+        return None, [S.SplitSpec(kind="AGE")]
+
+    if token == "ADMISSION_NIHSS":
+        return None, [S.SplitSpec(kind="NIHSS")]
+
+    return None, [S.SplitSpec(kind="CANONICAL", field=token)]
+
+
 def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[str] = None) -> S.AnalysisPlan:
     metric = str(slots.get("metric") or "").strip().upper()
     chart_type = (_optional_slot_value(slots, "chart_type") or "LINE").upper()
@@ -568,9 +608,13 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     elif len(filters) > 1:
         filter_node = S.AndFilter(and_=filters)
 
-    group_specs: List[S.GroupBySpec] = []
-    if isinstance(group_by, str) and group_by.strip():
-        group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
+    semantics_time, semantics_splits = _semantic_grouping(group_by)
+    semantics = S.AnalysisSemanticsSpec(
+        intent=_default_semantic_intent(chart_type, has_time_grain=semantics_time is not None),
+        measure=S.MeasureSemanticsSpec(type=_default_semantic_measure(has_time_grain=semantics_time is not None)),
+        time=semantics_time,
+        splits=semantics_splits,
+    )
 
     metric_origin_scope: Optional[S.OriginScopeSpec] = None
     if isinstance(guided_scope, dict) and guided_scope:
@@ -595,8 +639,8 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
         charts=[
             S.ChartSpec(
                 chart_type=chart_type,
+                semantics=semantics,
                 filters=filter_node,
-                group_by=group_specs or None,
                 metrics=[S.MetricSpec(metric=metric, originScope=metric_origin_scope)],
             )
         ],

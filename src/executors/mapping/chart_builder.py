@@ -347,23 +347,6 @@ def _derive_axes_from_dimensions(
     return x_axis, y_axis
 
 
-def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
-    chart_type = (plan_chart.chart_type or "").upper()
-    if chart_type == ChartType.PIE.value:
-        return "category"
-
-    if len(metric_codes) != 1:
-        return "value range"
-
-    metric_code = metric_codes[0]
-    metric_unit = _metric_unit(metric_code)
-
-    if metric_unit:
-        return f"value range in {metric_unit}"
-
-    return "value range"
-
-
 def _derive_title(
     plan_chart: S.ChartSpec,
     dimensions: List[Dimension],
@@ -392,9 +375,9 @@ def _derive_title(
             by_parts.append(token)
 
     if across_dim is None:
-        across_part = _fallback_across(plan_chart, metric_codes)
+        across_part = "category"
     else:
-        across_label = _dimension_label(across_dim) or _fallback_across(plan_chart, metric_codes)
+        across_label = _dimension_label(across_dim) or "category"
         across_part = _normalize_title_token(across_label)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
@@ -505,8 +488,4 @@ def build_chart_dto(
         )
         return BoxPlot(metadata=metadata, data=[box])
 
-    logger.warning(
-        "Chart type %s not yet implemented; defaulting to LINE rendering",
-        plan_chart.chart_type,
-    )
-    return LineChart(metadata=metadata, series=series)
+    raise ValueError(f"Unsupported chart type for DTO mapping: {plan_chart.chart_type}")

@@ -3,30 +3,30 @@ from typing import Any, cast
 
 from src.domain.dto.charts.types import ChartAxis
 from src.domain.graphql.request import DistributionOptions
-from src.domain.langchain.schema import ChartSpec, GroupByStrokeType, MetricSpec, NumericResolutionSpec
+from src.domain.langchain.schema import AnalysisSemanticsSpec, ChartSpec, MeasureSemanticsSpec, MetricSpec, NumericResolutionSpec, SplitSpec
 from src.executors.planning.metric_request_factory import build_metric_requests
+from src.executors.planning.ssot_metric_defaults import get_distribution_defaults
+
+# DTN SSOT defaults used as baseline for assertions. Tests that apply explicit
+# numericResolution overrides assert on the override values, not the SSOT baseline.
+_DTN_BINS, _DTN_MIN, _DTN_MAX = get_distribution_defaults("DTN")
 
 
 class MetricRequestFactoryTests(unittest.TestCase):
-    def test_histogram_defaults_distribution_when_missing(self) -> None:
+    def test_histogram_uses_ssot_defaults_for_distribution(self) -> None:
         plan_chart = ChartSpec(chart_type="HISTOGRAM", metrics=[MetricSpec(metric="DTN")])
 
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
             plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (20, 0, 200),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
         )
 
         self.assertEqual(len(metric_requests), 1)
         request = metric_requests[0]
         self.assertTrue(request.include_distribution)
         distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 20)
-        self.assertEqual(distribution_options.lower_bound, 0)
-        self.assertEqual(distribution_options.upper_bound, 200)
+        self.assertEqual(distribution_options.bin_count, _DTN_BINS)
+        self.assertEqual(distribution_options.lower_bound, _DTN_MIN)
+        self.assertEqual(distribution_options.upper_bound, _DTN_MAX)
         self.assertTrue(request.include_stats)
         self.assertIsNotNone(derived_axes)
         derived_axes_value = cast(tuple[ChartAxis, ChartAxis], derived_axes)
@@ -35,25 +35,20 @@ class MetricRequestFactoryTests(unittest.TestCase):
         self.assertEqual(metric_data_origins, [None])
         self.assertEqual(metric_scope_labels, [None])
 
-    def test_line_chart_requests_distribution_by_default(self) -> None:
+    def test_line_chart_uses_ssot_defaults_for_distribution(self) -> None:
         plan_chart = ChartSpec(chart_type="LINE", metrics=[MetricSpec(metric="DTN")])
 
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
             plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (15, 10, 90),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
         )
 
         self.assertEqual(len(metric_requests), 1)
         request = metric_requests[0]
         self.assertTrue(request.include_distribution)
         distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 15)
-        self.assertEqual(distribution_options.lower_bound, 10)
-        self.assertEqual(distribution_options.upper_bound, 90)
+        self.assertEqual(distribution_options.bin_count, _DTN_BINS)
+        self.assertEqual(distribution_options.lower_bound, _DTN_MIN)
+        self.assertEqual(distribution_options.upper_bound, _DTN_MAX)
         self.assertTrue(request.include_stats)
         self.assertIsNone(derived_axes)
         self.assertEqual(metric_data_origins, [None])
@@ -68,18 +63,12 @@ class MetricRequestFactoryTests(unittest.TestCase):
 
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
             plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (15, 0, 240),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
         )
 
         self.assertEqual(len(metric_requests), 1)
         request = metric_requests[0]
         self.assertTrue(request.include_distribution)
         distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 15)
         self.assertEqual(distribution_options.lower_bound, 10)
         self.assertEqual(distribution_options.upper_bound, 180)
         self.assertIsNotNone(request.metric_options)
@@ -92,29 +81,28 @@ class MetricRequestFactoryTests(unittest.TestCase):
         self.assertEqual(metric_data_origins, [None])
         self.assertEqual(metric_scope_labels, [None])
 
-    def test_grouped_chart_requests_distribution_by_default(self) -> None:
+    def test_grouped_chart_uses_ssot_defaults_for_distribution(self) -> None:
         plan_chart = ChartSpec(
             chart_type="BAR",
+            semantics=AnalysisSemanticsSpec(
+                intent="COMPARISON",
+                measure=MeasureSemanticsSpec(type="DISTRIBUTION"),
+                splits=[SplitSpec(kind="STROKE_TYPE")],
+            ),
             metrics=[MetricSpec(metric="DTN")],
-            group_by=[GroupByStrokeType()],
         )
 
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
             plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (25, 5, 105),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
         )
 
         self.assertEqual(len(metric_requests), 1)
         request = metric_requests[0]
         self.assertTrue(request.include_distribution)
         distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 25)
-        self.assertEqual(distribution_options.lower_bound, 5)
-        self.assertEqual(distribution_options.upper_bound, 105)
+        self.assertEqual(distribution_options.bin_count, _DTN_BINS)
+        self.assertEqual(distribution_options.lower_bound, _DTN_MIN)
+        self.assertEqual(distribution_options.upper_bound, _DTN_MAX)
         self.assertTrue(request.include_stats)
         self.assertIsNone(derived_axes)
         self.assertEqual(metric_data_origins, [None])
@@ -134,11 +122,6 @@ class MetricRequestFactoryTests(unittest.TestCase):
 
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
             plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (20, 0, 200),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
         )
 
         self.assertEqual(len(metric_requests), 1)
@@ -147,13 +130,13 @@ class MetricRequestFactoryTests(unittest.TestCase):
         distribution_options = cast(DistributionOptions, request.distribution_options)
         self.assertEqual(distribution_options.bin_count, 8)
         self.assertEqual(distribution_options.lower_bound, 25)
-        self.assertEqual(distribution_options.upper_bound, 200)
+        self.assertEqual(distribution_options.upper_bound, _DTN_MAX)  # upper not overridden
         self.assertIsNotNone(request.metric_options)
         metric_options = request.metric_options
         self.assertIsNotNone(metric_options)
         metric_options_value = cast(Any, metric_options)
         self.assertEqual(metric_options_value.lower_boundary, 25)
-        self.assertEqual(metric_options_value.upper_boundary, 200)
+        self.assertEqual(metric_options_value.upper_boundary, _DTN_MAX)
         self.assertIsNotNone(derived_axes)
         self.assertEqual(metric_data_origins, [None])
         self.assertEqual(metric_scope_labels, [None])
@@ -170,14 +153,7 @@ class MetricRequestFactoryTests(unittest.TestCase):
             metrics=[MetricSpec(metric="DTN")],
         )
 
-        metric_requests, _, _, _ = build_metric_requests(
-            plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (20, 0, 200),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
-        )
+        metric_requests, _, _, _ = build_metric_requests(plan_chart=plan_chart)
 
         request = metric_requests[0]
         distribution_options = cast(DistributionOptions, request.distribution_options)
@@ -190,26 +166,19 @@ class MetricRequestFactoryTests(unittest.TestCase):
             metrics=[MetricSpec(metric="DTN")],
         )
 
-        metric_requests, _, _, _ = build_metric_requests(
-            plan_chart=plan_chart,
-            derive_defaults_fn=lambda metric: (30, 5, 150),
-            axis_from_meta_fn=lambda metric, lower, upper: (
-                ChartAxis(label=str(lower)),
-                ChartAxis(label=str(upper)),
-            ),
-        )
+        metric_requests, _, _, _ = build_metric_requests(plan_chart=plan_chart)
 
         request = metric_requests[0]
         self.assertTrue(request.include_distribution)
         distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 30)
-        self.assertEqual(distribution_options.lower_bound, 5)
+        self.assertEqual(distribution_options.bin_count, _DTN_BINS)
+        self.assertEqual(distribution_options.lower_bound, _DTN_MIN)
         self.assertEqual(distribution_options.upper_bound, 130)
         self.assertIsNotNone(request.metric_options)
         metric_options = request.metric_options
         self.assertIsNotNone(metric_options)
         metric_options_value = cast(Any, metric_options)
-        self.assertEqual(metric_options_value.lower_boundary, 5)
+        self.assertEqual(metric_options_value.lower_boundary, _DTN_MIN)
         self.assertEqual(metric_options_value.upper_boundary, 130)
 
 

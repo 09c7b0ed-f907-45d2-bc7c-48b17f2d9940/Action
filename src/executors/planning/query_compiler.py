@@ -180,35 +180,6 @@ def _build_month_periods_from_bounds(start_iso: Optional[str], end_iso: Optional
     return periods
 
 
-def _build_recent_month_periods(month_count: int = 12) -> List[TimePeriod]:
-    from calendar import monthrange
-
-    if month_count <= 0:
-        return []
-
-    today = date.today()
-    y, m = today.year, today.month
-    periods: List[TimePeriod] = []
-
-    for _ in range(month_count):
-        month_start = date(y, m, 1)
-        month_end = date(y, m, monthrange(y, m)[1])
-        periods.append(
-            TimePeriod(
-                startDate=month_start.isoformat(),
-                endDate=month_end.isoformat(),
-            )
-        )
-        if m == 1:
-            y -= 1
-            m = 12
-        else:
-            m -= 1
-
-    periods.reverse()
-    return periods
-
-
 def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str, dict[str, Any]]:
     context: dict[str, Any] = {
         "event": event,
@@ -408,17 +379,6 @@ class Dimension:
                     y, q = _shift_quarter(y, q, 1)
                 return buckets
 
-            if grain == "QUARTER" and window is None:
-                # No window specified - default to last 8 quarters (2 years)
-                today = date.today()
-                current_quarter = (today.month - 1) // 3 + 1
-                buckets: list[tuple[date, date]] = []
-                for i in range(8):
-                    y, q = _shift_quarter(today.year, current_quarter, -i)
-                    buckets.append(_quarter_bucket(y, q))
-                buckets.reverse()
-                return buckets
-
             return []
         if isinstance(self.spec, GroupByAge):
             return list(self.spec.buckets)
@@ -603,14 +563,13 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
             if grain == "MONTH":
                 bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
                 batched_time_periods = _build_month_periods_from_bounds(bound_start, bound_end)
-                if not batched_time_periods:
-                    # Keep monthly chart semantics stable when planner omitted
-                    # explicit time window/date filters.
-                    batched_time_periods = _build_recent_month_periods(12)
 
-    if batched_time_enabled and not batched_time_periods:
-        batched_time_enabled = False
-        batched_time_dim = None
+    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+        batched_time_spec = batched_time_dim.spec
+        if isinstance(batched_time_spec, GroupByTime):
+            raise ValueError(
+                "Semantic time grouping requires explicit time window/range or date-filter bounds for retrieval compilation"
+            )
 
     # After batched_time_periods is built, constrain to DateFilter bounds if present
     if batched_time_enabled and batched_time_periods:

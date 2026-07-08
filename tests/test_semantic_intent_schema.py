@@ -1,5 +1,7 @@
 import unittest
 
+from pydantic import ValidationError
+
 from src.domain.langchain.schema import ChartSpec
 
 
@@ -40,6 +42,21 @@ class SemanticIntentSchemaTests(unittest.TestCase):
         self.assertEqual(semantics.splits[0].kind, "SEX")
         self.assertIsNotNone(semantics.x_axis)
         self.assertEqual(semantics.x_axis.metric, "DTN")
+
+    def test_rejects_chart_group_by_field(self) -> None:
+        with self.assertRaises(ValidationError):
+            ChartSpec.model_validate(
+                {
+                    "chart_type": "LINE",
+                    "metrics": [{"metric": "DTN"}],
+                    "group_by": [{"grain": "MONTH"}],
+                    "semantics": {
+                        "intent": "TREND",
+                        "measure": {"type": "MEAN"},
+                        "time": {"grain": "MONTH"},
+                    },
+                }
+            )
 
     def test_rejects_invalid_intent(self) -> None:
         with self.assertRaises(ValueError):

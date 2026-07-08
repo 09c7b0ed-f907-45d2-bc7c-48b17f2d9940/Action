@@ -12,7 +12,12 @@ def test_compile_chart_grouping_prefers_semantics_splits_and_time() -> None:
             time=S.TimeSemanticsSpec(grain="MONTH"),
             splits=[S.SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
         ),
-        group_by=[S.GroupByStrokeType(categories=["ISCHEMIC"])],
+        filters=S.AndFilter(
+            and_=[
+                S.DateFilter(type="DateFilter", operator="GE", value="2023-01-01"),
+                S.DateFilter(type="DateFilter", operator="LE", value="2023-12-31"),
+            ]
+        ),
     )
 
     compiled = compile_chart_grouping(chart)
@@ -23,6 +28,24 @@ def test_compile_chart_grouping_prefers_semantics_splits_and_time() -> None:
     assert len(batch.batched_time_periods) == 12
     # Compiled from semantic split SEX, not fallback group_by stroke type.
     assert len(batch.combos_list) == 2
+
+
+def test_compile_chart_grouping_rejects_time_grain_without_explicit_bounds() -> None:
+    chart = S.ChartSpec(
+        chart_type="LINE",
+        metrics=[S.MetricSpec(metric="DTN")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(grain="MONTH"),
+        ),
+    )
+
+    try:
+        compile_chart_grouping(chart)
+        assert False, "Expected ValueError when semantic time grain lacks explicit bounds"
+    except ValueError as exc:
+        assert "explicit time window/range" in str(exc)
 
 
 def test_compile_chart_grouping_rejects_unsupported_custom_split() -> None:

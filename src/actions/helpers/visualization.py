@@ -443,24 +443,8 @@ def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -
     return None
 
 
-def _strip_text_fields(value: Any) -> Any:
-    """Drop user-facing free-text fields to prevent LLM prose from reaching clients."""
-
-    if isinstance(value, dict):
-        out: Dict[str, Any] = {}
-        for key, child in _mapping_to_dict(value).items():
-            if key in {"title", "description"}:
-                continue
-            out[key] = _strip_text_fields(child)
-        return out
-    if isinstance(value, list):
-        items = cast(List[object], value)
-        return [_strip_text_fields(item) for item in items]
-    return value
-
-
 def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
-    """Serialize planner output for frontend consumption without mutating it."""
+    """Serialize planner output into a minimal preview contract for the frontend."""
 
     payload = _maybe_model_dump_dict(plan, mode="json", by_alias=True, exclude_none=True)
     if payload is not None:
@@ -474,8 +458,133 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
     if not payload_dict:
         return {}
 
-    sanitized_any = _strip_text_fields(payload_dict)
-    return cast(Dict[str, Any], sanitized_any) if isinstance(sanitized_any, dict) else {}
+    def _metric_preview(metric_any: Any) -> Dict[str, Any]:
+        metric = _mapping_to_dict(metric_any)
+        metric_code = metric.get("metric")
+        if isinstance(metric_code, str) and metric_code.strip():
+            return {"metric": metric_code.strip().upper()}
+        return {}
+
+    def _split_preview(split_any: Any) -> Dict[str, Any]:
+        split = _mapping_to_dict(split_any)
+        kind = split.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            return {}
+
+        out: Dict[str, Any] = {"kind": kind.strip().upper()}
+        categories_any = split.get("categories")
+        if isinstance(categories_any, list):
+            categories: List[str] = []
+            for raw in cast(List[Any], categories_any):
+                if isinstance(raw, str) and raw.strip():
+                    categories.append(raw.strip().upper())
+            if categories:
+                out["categories"] = categories
+        return out
+
+    def _chart_preview(chart_any: Any) -> Dict[str, Any]:
+        chart = _mapping_to_dict(chart_any)
+        out: Dict[str, Any] = {}
+
+        chart_type = chart.get("chart_type")
+        if isinstance(chart_type, str) and chart_type.strip():
+            out["chart_type"] = chart_type.strip().upper()
+
+        metrics_any = chart.get("metrics")
+        if isinstance(metrics_any, list):
+            metrics: List[Dict[str, Any]] = []
+            for item in cast(List[Any], metrics_any):
+                preview = _metric_preview(item)
+                if preview:
+                    metrics.append(preview)
+            if metrics:
+                out["metrics"] = metrics
+
+        semantics = _mapping_to_dict(chart.get("semantics"))
+        if semantics:
+            semantics_out: Dict[str, Any] = {}
+            intent = semantics.get("intent")
+            if isinstance(intent, str) and intent.strip():
+                semantics_out["intent"] = intent.strip().upper()
+
+            measure = _mapping_to_dict(semantics.get("measure"))
+            measure_type = measure.get("type")
+            if isinstance(measure_type, str) and measure_type.strip():
+                semantics_out["measure"] = {"type": measure_type.strip().upper()}
+
+            time_spec = _mapping_to_dict(semantics.get("time"))
+            grain = time_spec.get("grain")
+            if isinstance(grain, str) and grain.strip():
+                semantics_out["time"] = {"grain": grain.strip().upper()}
+
+            splits_any = semantics.get("splits")
+            if isinstance(splits_any, list):
+                splits: List[Dict[str, Any]] = []
+                for item in cast(List[Any], splits_any):
+                    preview = _split_preview(item)
+                    if preview:
+                        splits.append(preview)
+                if splits:
+                    semantics_out["splits"] = splits
+
+            if semantics_out:
+                out["semantics"] = semantics_out
+
+        return out
+
+    def _statistical_test_preview(test_any: Any) -> Dict[str, Any]:
+        test = _mapping_to_dict(test_any)
+        out: Dict[str, Any] = {}
+
+        test_type = test.get("test_type")
+        if isinstance(test_type, str) and test_type.strip():
+            out["test_type"] = test_type.strip().upper()
+
+        metrics_any = test.get("metrics")
+        if isinstance(metrics_any, list):
+            metrics: List[Dict[str, Any]] = []
+            for item in cast(List[Any], metrics_any):
+                preview = _metric_preview(item)
+                if preview:
+                    metrics.append(preview)
+            if metrics:
+                out["metrics"] = metrics
+
+        group_by_any = test.get("group_by")
+        if isinstance(group_by_any, list):
+            group_by: List[Dict[str, Any]] = []
+            for item in cast(List[Any], group_by_any):
+                preview = _split_preview(item)
+                if preview:
+                    group_by.append(preview)
+            if group_by:
+                out["group_by"] = group_by
+
+        return out
+
+    charts_any = payload_dict.get("charts")
+    charts: List[Dict[str, Any]] = []
+    if isinstance(charts_any, list):
+        for item in cast(List[Any], charts_any):
+            preview = _chart_preview(item)
+            if preview:
+                charts.append(preview)
+
+    tests_any = payload_dict.get("statistical_tests")
+    tests: List[Dict[str, Any]] = []
+    if isinstance(tests_any, list):
+        for item in cast(List[Any], tests_any):
+            preview = _statistical_test_preview(item)
+            if preview:
+                tests.append(preview)
+
+    out_payload: Dict[str, Any] = {}
+    if charts:
+        out_payload["charts"] = charts
+    if tests:
+        out_payload["statistical_tests"] = tests
+
+    return out_payload
 
 
 def format_execution_summary(
@@ -496,6 +605,9 @@ def format_execution_summary(
     estimated = summary_dict.get("estimated_queries")
     actual = summary_dict.get("actual_queries")
     chart_count = summary_dict.get("chart_count")
+    stats_count = summary_dict.get("stats_count")
+    stats_skipped = summary_dict.get("stats_skipped")
+    stats_errors = summary_dict.get("stats_errors")
     trace_id = summary_dict.get("trace_id")
     normalization = _mapping_to_dict(summary_dict.get("normalization")) or None
     batches_any = summary_dict.get("batches")
@@ -513,14 +625,55 @@ def format_execution_summary(
         )
 
     if isinstance(chart_count, int):
-        if chart_count == 1:
-            lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
+        has_stats = isinstance(stats_count, int) and stats_count > 0
+        if has_stats:
+            if chart_count == 1:
+                lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
+            elif chart_count > 1:
+                lines.append(
+                    t(
+                        "action.summary.plan_produced_many_charts",
+                        "Plan produced {chart_count} charts.",
+                        {"chart_count": chart_count},
+                    )
+                )
+        else:
+            if chart_count == 1:
+                lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
+            else:
+                lines.append(
+                    t(
+                        "action.summary.plan_produced_many_charts",
+                        "Plan produced {chart_count} charts.",
+                        {"chart_count": chart_count},
+                    )
+                )
+
+    if isinstance(stats_count, int) and stats_count > 0:
+        if stats_count == 1:
+            lines.append(t("action.summary.plan_produced_one_stat", "Plan produced 1 statistical test result."))
         else:
             lines.append(
                 t(
-                    "action.summary.plan_produced_many_charts",
-                    "Plan produced {chart_count} charts.",
-                    {"chart_count": chart_count},
+                    "action.summary.plan_produced_many_stats",
+                    "Plan produced {stats_count} statistical test results.",
+                    {"stats_count": stats_count},
+                )
+            )
+        if isinstance(stats_skipped, int) and stats_skipped > 0:
+            lines.append(
+                t(
+                    "action.summary.stats_skipped",
+                    "Skipped {stats_skipped} statistical test result(s).",
+                    {"stats_skipped": stats_skipped},
+                )
+            )
+        if isinstance(stats_errors, int) and stats_errors > 0:
+            lines.append(
+                t(
+                    "action.summary.stats_errors",
+                    "{stats_errors} statistical test result(s) returned errors.",
+                    {"stats_errors": stats_errors},
                 )
             )
 

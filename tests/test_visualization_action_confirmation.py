@@ -46,6 +46,47 @@ class VisualizationActionConfirmationTests(unittest.TestCase):
 
         self.assertEqual(message, "Here's your line chart of DTN per month.")
 
+    def test_confirmation_message_for_stats_only_plan(self) -> None:
+        build_confirmation_message = _load_confirmation_builder()
+        plan = S.AnalysisPlan(
+            statistical_tests=[
+                S.StatisticalTestSpec(
+                    test_type="MANN_WHITNEY_U_TEST",
+                    metrics=[
+                        S.MetricSpec(metric="DTN"),
+                        S.MetricSpec(metric="DTN"),
+                    ],
+                )
+            ]
+        )
+
+        message = build_confirmation_message(plan, is_update=False)
+        self.assertEqual(message, "Completed statistical analysis: 1 test result is ready.")
+
+    def test_confirmation_message_for_multiple_stats_only_plan(self) -> None:
+        build_confirmation_message = _load_confirmation_builder()
+        plan = S.AnalysisPlan(
+            statistical_tests=[
+                S.StatisticalTestSpec(
+                    test_type="MANN_WHITNEY_U_TEST",
+                    metrics=[
+                        S.MetricSpec(metric="DTN"),
+                        S.MetricSpec(metric="DTN"),
+                    ],
+                ),
+                S.StatisticalTestSpec(
+                    test_type="MANN_WHITNEY_U_TEST",
+                    metrics=[
+                        S.MetricSpec(metric="DIDO"),
+                        S.MetricSpec(metric="DIDO"),
+                    ],
+                ),
+            ]
+        )
+
+        message = build_confirmation_message(plan, is_update=True)
+        self.assertEqual(message, "Updated statistical analysis: 2 test results are ready.")
+
 
 if __name__ == "__main__":
     unittest.main()

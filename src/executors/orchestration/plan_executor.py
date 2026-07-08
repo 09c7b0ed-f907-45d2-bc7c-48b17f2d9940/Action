@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 from uuid import uuid4
 
 from src.domain.dto.analytics import StatisticalTestResult
-from src.domain.dto.charts.types import ChartAxis, ChartSeries
+from src.domain.dto.charts.types import ChartSeries
 from src.domain.dto.execution_summary import ExecutionBatchSummary, ExecutionSummary
 from src.domain.dto.response import VisualizationResponse
 from src.domain.graphql.request import BooleanFilter as GQLBooleanFilter
@@ -45,8 +45,6 @@ from src.executors.planning.request_plan import (
 )
 from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import (
-    get_metric_display_name,
-    get_metric_metadata,
     get_statistics_metric_enum_map,
 )
 from src.util import env as env_util
@@ -60,6 +58,7 @@ _LOG_GRAPHQL_QUERY = env_util.env_flag("EXECUTOR_LOG_GRAPHQL_QUERY", default=Fal
 _EMIT_COMPILER_DIAGNOSTICS = env_util.env_flag(
     "EXECUTOR_EMIT_COMPILER_DIAGNOSTICS", default=False
 )
+_INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
 _STRICT_MODE = env_util.env_flag(
     "ANALYTICS_STRICT_MODE", default=False
 ) or env_util.env_flag("EXECUTOR_STRICT_MODE", default=False)
@@ -135,23 +134,6 @@ client = GraphQLProxyClient(
 )
 
 
-METRIC_METADATA: Dict[str, Any] = get_metric_metadata()
-
-_AXIS_LABEL_OVERRIDES: Dict[str, str] = {
-    "DTN": "Door-to-Needle Time",
-    "ONSET_TO_DOOR": "Onset-to-Door Time",
-    "DOOR_TO_REPERFUSION": "Door-to-Reperfusion Time",
-}
-
-_AXIS_UNIT_FALLBACKS: Dict[str, str] = {
-    "DTN": "minutes",
-    "ONSET_TO_DOOR": "minutes",
-    "DOOR_TO_REPERFUSION": "minutes",
-}
-
-_AXIS_ACRONYMS = {"NIHSS", "DTN", "IVT", "EVT", "TIA", "LVO", "ICH", "SAH", "CT", "MRI"}
-
-
 def _mapping_to_dict(value: Any) -> Dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -162,80 +144,6 @@ def _mapping_to_dict(value: Any) -> Dict[str, Any]:
         if isinstance(raw_key, str):
             result[raw_key] = raw_value
     return result
-
-
-def _normalize_axis_display_label(raw: str) -> str:
-    text = (raw or "").strip()
-    if not text:
-        return ""
-
-    def _word_case(word: str) -> str:
-        token = word.strip()
-        if not token:
-            return token
-        upper = token.upper()
-        if upper in _AXIS_ACRONYMS:
-            return upper
-        if token.isupper() and len(token) <= 4:
-            return token
-        if token[:1].isdigit():
-            return token
-        return token[:1].upper() + token[1:].lower()
-
-    out_words: List[str] = []
-    for word in text.split():
-        if "-" in word:
-            out_words.append("-".join(_word_case(part) for part in word.split("-")))
-        else:
-            out_words.append(_word_case(word))
-    return " ".join(out_words)
-
-
-def _parse_int_csv(raw: str) -> List[int]:
-    out: List[int] = []
-    for part in (raw or "").split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            out.append(int(token))
-        except Exception:
-            logger.debug(
-                "[plan_executor] Failed to parse integer CSV token; skipping token",
-                exc_info=True,
-                extra={
-                    "log_context": {
-                        "event": "plan_executor.config.int_csv_token_skipped",
-                        "operation": "_parse_int_csv",
-                        "outcome": "degraded",
-                        "token": token,
-                    }
-                },
-            )
-            continue
-    return out
-
-
-_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(
-    env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1"
-)
-_DEFAULT_PROVIDER_IDS = _parse_int_csv(
-    env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or ""
-)
-
-
-def _build_default_data_origin() -> DataOrigin:
-    provider_group_ids = list(_DEFAULT_PROVIDER_GROUP_IDS)
-    provider_ids = list(_DEFAULT_PROVIDER_IDS)
-    if not provider_group_ids and not provider_ids:
-        provider_group_ids = [1]
-
-    kwargs: Dict[str, Any] = {}
-    if provider_group_ids:
-        kwargs["providerGroupId"] = provider_group_ids
-    if provider_ids:
-        kwargs["providerId"] = provider_ids
-    return DataOrigin(**kwargs)
 
 
 def _collect_date_bounds(
@@ -265,15 +173,6 @@ def _collect_date_bounds(
 
     visit(filter_obj)
     return min_start, max_end
-
-
-def _default_time_period_from_filter(filter_obj: Optional[Any]) -> Dict[str, str]:
-    start_bound, end_bound = _collect_date_bounds(filter_obj)
-    default_tp = TimePeriod()
-    return {
-        "startDate": start_bound or cast(str, default_tp.start_date),
-        "endDate": end_bound or cast(str, default_tp.end_date),
-    }
 
 
 # Adaptation layer for GraphQL filter objects to the statistical test payload format. This is necessary because the GraphQL API expects a specific structure for filters.
@@ -628,15 +527,18 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
         )
 
     if not out:
-        return [
-            StatisticalTestResult(
-                test_type="MANN_WHITNEY_U_TEST",
-                status="skipped",
-                reason="Mann-Whitney returned no comparable cohort rows",
-                title="Mann-Whitney U Test: skipped",
-                details={"trace_id": trace_id},
-            )
-        ]
+        raise VisualizationExecutionError(
+            message="I could not find any providers in one or both cohorts for that Mann-Whitney U test.",
+            code="EXEC_STATS_EMPTY_COHORT",
+            reason="empty_statistical_cohort",
+            clarification_type="analysis_plan",
+            clarification_options=[],
+            user_message=(
+                "I could not find any providers in one or both cohorts for that Mann-Whitney U test. "
+                "Please choose different cohorts or a broader scope."
+            ),
+            trace_id=trace_id,
+        )
 
     return out
 
@@ -680,8 +582,18 @@ def _execute_temporal_pair_mann_whitney(
     shared_origin = (
         (metric_a.data_origin if metric_a is not None else None)
         or (metric_b.data_origin if metric_b is not None else None)
-        or _build_default_data_origin()
     )
+    if shared_origin is None:
+        reason = "Temporal Mann-Whitney test requires explicit data origin on at least one metric"
+        logger.warning("[plan_executor] Skipping temporal MW: %s", reason)
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason=reason,
+                title="Mann-Whitney U Test: skipped",
+            )
+        ]
     data_origin_payload = cast(Any, shared_origin).model_dump(
         by_alias=True, exclude_none=True
     )
@@ -698,13 +610,21 @@ def _execute_temporal_pair_mann_whitney(
         candidate for candidate in [start_a, start_b] if candidate
     ]
     shared_end_candidates = [candidate for candidate in [end_a, end_b] if candidate]
-    if shared_start_candidates and shared_end_candidates:
-        shared_time_period = {
-            "startDate": min(shared_start_candidates),
-            "endDate": max(shared_end_candidates),
-        }
-    else:
-        shared_time_period = _default_time_period_from_filter(None)
+    if not shared_start_candidates or not shared_end_candidates:
+        reason = "Temporal Mann-Whitney test requires explicit date-filter bounds on both tests"
+        logger.warning("[plan_executor] Skipping temporal MW: %s", reason)
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason=reason,
+                title="Mann-Whitney U Test: skipped",
+            )
+        ]
+    shared_time_period = {
+        "startDate": min(shared_start_candidates),
+        "endDate": max(shared_end_candidates),
+    }
 
     return _execute_mann_whitney_query(
         metric_values=metric_values,
@@ -822,21 +742,38 @@ def _execute_mann_whitney_test(
             )
         ]
 
-    time_period_payload = _default_time_period_from_filter(base_filter)
-    origin_a = data_origin_payload_a or _build_default_data_origin().model_dump(
-        by_alias=True, exclude_none=True
-    )
-    origin_b = data_origin_payload_b or _build_default_data_origin().model_dump(
-        by_alias=True, exclude_none=True
-    )
+    if data_origin_payload_a is None or data_origin_payload_b is None:
+        reason = "MANN_WHITNEY_U_TEST requires explicit data origin for both cohorts"
+        logger.warning("[plan_executor] Skipping MW: %s", reason)
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason=reason,
+                title="Mann-Whitney U Test: skipped",
+            )
+        ]
+    start_bound, end_bound = _collect_date_bounds(base_filter)
+    if start_bound is None or end_bound is None:
+        reason = "MANN_WHITNEY_U_TEST requires explicit date-filter bounds"
+        logger.warning("[plan_executor] Skipping MW: %s", reason)
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason=reason,
+                title="Mann-Whitney U Test: skipped",
+            )
+        ]
+    time_period_payload = {"startDate": start_bound, "endDate": end_bound}
     return _execute_mann_whitney_query(
         metric_values=metric_values,
         user_sub=user_sub,
         trace_id=trace_id,
         label_a=label_a,
         label_b=label_b,
-        data_origin_payload_a=origin_a,
-        data_origin_payload_b=origin_b,
+        data_origin_payload_a=data_origin_payload_a,
+        data_origin_payload_b=data_origin_payload_b,
         time_period_payload_a=time_period_payload,
         time_period_payload_b=time_period_payload,
         cohort_filter_a=cohort_filter_a,
@@ -909,6 +846,48 @@ def _execute_statistical_tests(
         index += 1
 
     return results
+
+
+def _validate_statistical_tests_readiness(
+    plan: AnalysisPlan, trace_id: str
+) -> None:
+    tests = list(plan.statistical_tests or [])
+    if not tests:
+        return
+
+    for test in tests:
+        test_type = (test.test_type or "").upper().strip()
+        if test_type != "MANN_WHITNEY_U_TEST":
+            continue
+
+        metrics = list(test.metrics or [])
+        if len(metrics) < 2:
+            raise VisualizationExecutionError(
+                user_message=(
+                    "I can run Mann-Whitney U only when you provide two explicit cohorts "
+                    "to compare. Please specify both cohort A and cohort B."
+                ),
+                reason="missing_statistical_cohorts",
+                code="EXEC_STATS_MISSING_COHORTS",
+                trace_id=trace_id,
+                clarification_type="analysis_plan",
+                clarification_options=[],
+            )
+
+        first = metrics[0]
+        second = metrics[1]
+        if not _has_distinct_metric_cohorts(first, second):
+            raise VisualizationExecutionError(
+                user_message=(
+                    "Mann-Whitney U requires two distinct cohorts. Please provide "
+                    "different cohort filters or scopes for each comparison group."
+                ),
+                reason="missing_statistical_cohorts",
+                code="EXEC_STATS_MISSING_COHORTS",
+                trace_id=trace_id,
+                clarification_type="analysis_plan",
+                clarification_options=[],
+            )
 
 
 def _emit_compiler_diagnostics(
@@ -1007,109 +986,6 @@ def _to_execution_error(
         code="EXEC_DATA_FETCH_FAILED",
         trace_id=trace_id,
     )
-
-
-def _get_metric_meta(metric_code: str) -> Dict[str, Any]:
-    code = (metric_code or "").upper()
-    meta: Dict[str, Any] = METRIC_METADATA.get(code) or {}
-    return meta
-
-
-def _derive_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
-    """Return (bins, min_value, max_value) using SSOT metadata with sensible fallbacks.
-
-    Priority:
-    - Use top-level promoted keys when present: range_min/range_max and distribution_default_buckets
-    - Else use nested numeric block fields if present: numeric.default_buckets (and optional range_min/range_max if provided)
-    - Else fallback to known safe ranges per metric; else general default (20, 0, 200)
-    """
-    meta = _get_metric_meta(metric_code)
-
-    bins_any: Any = meta.get("distribution_default_buckets")
-    numeric_block: Dict[str, Any] = cast(Dict[str, Any], meta.get("numeric") or {})
-    bins = bins_any or numeric_block.get("default_buckets") or 20
-
-    rmin: Any = meta.get("range_min")
-    rmax: Any = meta.get("range_max")
-    if rmin is None or rmax is None:
-        n: Dict[str, Any] = cast(Dict[str, Any], meta.get("numeric") or {})
-        rmin = rmin if rmin is not None else n.get("range_min")
-        rmax = rmax if rmax is not None else n.get("range_max")
-
-    if rmin is None or rmax is None:
-        defaults: dict[str, tuple[int, int]] = {
-            "AGE": (18, 95),
-            "ADMISSION_NIHSS": (0, 42),
-            "DTN": (0, 120),
-        }
-        if metric_code.upper() in defaults:
-            rmin, rmax = defaults[metric_code.upper()]
-        else:
-            rmin = rmin if rmin is not None else 0
-            rmax = rmax if rmax is not None else 200
-
-    try:
-        bins = int(bins)
-    except Exception:
-        logger.debug(
-            "[plan_executor] Failed to parse distribution bucket count; using fallback",
-            exc_info=True,
-            extra={
-                "log_context": {
-                    "event": "plan_executor.distribution_defaults.bins_fallback",
-                    "operation": "_derive_distribution_defaults",
-                    "outcome": "degraded",
-                    "metric_code": metric_code,
-                    "raw_bins": bins,
-                    "fallback_bins": 20,
-                }
-            },
-        )
-        bins = 20
-    try:
-        rmin = int(rmin)
-        rmax = int(rmax)
-    except Exception:
-        logger.debug(
-            "[plan_executor] Failed to parse distribution range; using fallback range",
-            exc_info=True,
-            extra={
-                "log_context": {
-                    "event": "plan_executor.distribution_defaults.range_fallback",
-                    "operation": "_derive_distribution_defaults",
-                    "outcome": "degraded",
-                    "metric_code": metric_code,
-                    "raw_range_min": rmin,
-                    "raw_range_max": rmax,
-                    "fallback_range_min": 0,
-                    "fallback_range_max": 200,
-                }
-            },
-        )
-        rmin, rmax = 0, 200
-    if rmin > rmax:
-        rmin, rmax = rmax, rmin
-    return bins, rmin, rmax
-
-
-def _axis_from_meta(
-    metric_code: str, x_min: int, x_max: int
-) -> tuple[ChartAxis, ChartAxis]:
-    metric_key = (metric_code or "").upper()
-    meta = _get_metric_meta(metric_key)
-    display = _AXIS_LABEL_OVERRIDES.get(metric_key) or _normalize_axis_display_label(
-        get_metric_display_name(metric_key)
-    )
-    unit_any: Any = meta.get("unit")
-    if unit_any is None:
-        unit_any = cast(Dict[str, Any], meta.get("numeric") or {}).get("unit")
-    unit: Optional[str] = cast(Optional[str], unit_any)
-    if unit is None:
-        unit = _AXIS_UNIT_FALLBACKS.get(metric_key)
-    x_label = f"{display} ({unit})" if unit else display
-    x_axis = ChartAxis(label=x_label, min_value=x_min, max_value=x_max)
-    y_axis = ChartAxis(label="Cases")
-    return x_axis, y_axis
 
 
 def _format_iso_date(value: str) -> str:
@@ -1397,6 +1273,7 @@ async def execute_plan_async(
         ) from exc
 
     normalization_summary = None
+    _validate_statistical_tests_readiness(plan=plan, trace_id=trace_id_resolved)
 
     plan_charts = coalesce(plan.charts, [])
     response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
@@ -1420,11 +1297,7 @@ async def execute_plan_async(
 
     for planChart in plan_charts:
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = (
-            build_metric_requests(
-                plan_chart=planChart,
-                derive_defaults_fn=_derive_distribution_defaults,
-                axis_from_meta_fn=_axis_from_meta,
-            )
+            build_metric_requests(plan_chart=planChart)
         )
 
         compiled_grouping = compile_chart_grouping(planChart)
@@ -1454,6 +1327,7 @@ async def execute_plan_async(
                 include_metric_alias=include_metric_alias,
                 group_by_field=gb_field,
                 metric_scope_labels=metric_scope_labels,
+                include_general_stats=_INCLUDE_GENERAL_STATS,
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests
@@ -1586,10 +1460,17 @@ async def execute_plan_async(
             )
         )
 
+    stats_count = len(response.stats)
+    stats_skipped = sum(1 for result in response.stats if result.status == "skipped")
+    stats_errors = sum(1 for result in response.stats if result.status == "error")
+
     if summary_cb is not None:
         payload = make_execution_summary(
             trace_id=trace_id_resolved,
             chart_count=len(plan_charts),
+            stats_count=stats_count,
+            stats_skipped=stats_skipped,
+            stats_errors=stats_errors,
             estimated_queries=estimated_queries,
             actual_queries=actual_queries,
             batches=summary_batches,

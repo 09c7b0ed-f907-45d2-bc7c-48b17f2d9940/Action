@@ -87,11 +87,7 @@ def map_metrics_payload_to_series(
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
 
-            # Some plans (e.g., GroupBySex when backend groupBy enum is unavailable)
-            # are compiled into multiple filtered requests, one per category.
-            # In that case `group_by_field` is None, but non-empty label_parts
-            # still indicate grouped-style output should be produced from stats.
-            is_grouped_or_time = bool(group_by_field) or add_time_period_labels or bool(label_parts)
+            is_grouped_or_time = bool(group_by_field) or add_time_period_labels
             if is_grouped_or_time:
                 x_value: str
                 tp_start: Optional[str] = None
@@ -115,8 +111,6 @@ def map_metrics_payload_to_series(
                 elif server_label:
                     mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                     x_value = mapped or server_label
-                elif label_parts:
-                    x_value = label_parts[-1]
                 else:
                     x_value = "value"
 

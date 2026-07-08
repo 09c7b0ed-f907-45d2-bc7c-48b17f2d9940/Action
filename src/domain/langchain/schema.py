@@ -836,18 +836,17 @@ class ChartSpec(BaseModel):
     Attributes:
         chart_type: The chart type (must be in ChartType).
         filters: Optional chart-level filters applied to all metrics/series.
-        group_by: Optional chart-level groupings applied to all metrics/series.
+        semantics: Explicit semantic intent, splits, time, and measure metadata.
         metrics: List of metrics to include in the chart.
     """
 
     chart_type: str  # Should be a value from ChartType
     semantics: Optional[AnalysisSemanticsSpec] = None
     filters: Optional[FilterNode] = None
-    group_by: Optional[List[GroupBySpec]] = None
     metrics: List[MetricSpec]
     numeric_resolution: Optional[NumericResolutionSpec] = Field(default=None, alias="numericResolution")
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     @field_validator("chart_type")
     def validate_chart_type(cls, v: str) -> str:
@@ -857,65 +856,11 @@ class ChartSpec(BaseModel):
         return v_norm
 
     @model_validator(mode="after")
-    def validate_chart_level_groupby(self) -> "ChartSpec":
-        """Validate chart-level group_by and filters.
-
-        Rules enforced:
-        - No duplicate GroupBy of the same exact spec.
-        - At most one GroupBySex and one GroupByStrokeType.
-        - At most one GroupByAge and one GroupByNIHSS.
-        - GroupByBoolean: at most one per boolean_type.
-        - GroupByCanonicalField: no duplicates of the same field (multiple distinct canonical fields are allowed).
-        """
-        gb = self.group_by or []
-        if not gb:
+    def validate_chart_level_semantics(self) -> "ChartSpec":
+        if self.semantics is None:
             return self
-
-        seen_specs: set[GroupBySpec] = set()
-        sex_count = 0
-        stroke_count = 0
-        age_count = 0
-        nihss_count = 0
-        time_count = 0
-        boolean_by_type: dict[str, int] = {}
-        canonical_fields: set[str] = set()
-
-        for g in gb:
-            if g in seen_specs:
-                raise ValueError("Duplicate groupBy spec detected in chart.group_by; remove duplicates.")
-            seen_specs.add(g)
-
-            if isinstance(g, GroupBySex):
-                sex_count += 1
-                if sex_count > 1:
-                    raise ValueError("Only one GroupBySex is allowed per chart.")
-            elif isinstance(g, GroupByStrokeType):
-                stroke_count += 1
-                if stroke_count > 1:
-                    raise ValueError("Only one GroupByStrokeType is allowed per chart.")
-            elif isinstance(g, GroupByAge):
-                age_count += 1
-                if age_count > 1:
-                    raise ValueError("Only one GroupByAge is allowed per chart.")
-            elif isinstance(g, GroupByNIHSS):
-                nihss_count += 1
-                if nihss_count > 1:
-                    raise ValueError("Only one GroupByNIHSS is allowed per chart.")
-            elif isinstance(g, GroupByTime):
-                time_count += 1
-                if time_count > 1:
-                    raise ValueError("Only one GroupByTime is allowed per chart.")
-            elif isinstance(g, GroupByBoolean):
-                boolean_by_type[g.boolean_type] = boolean_by_type.get(g.boolean_type, 0) + 1
-            elif isinstance(g, GroupByCanonicalField):
-                if g.field in canonical_fields:
-                    raise ValueError("Duplicate GroupByCanonicalField for the same field is not allowed.")
-                canonical_fields.add(g.field)
-
-        for btype, count in boolean_by_type.items():
-            if count > 1:
-                raise ValueError(f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}').")
-
+        if self.semantics.measure is None:
+            raise ValueError("Chart semantics.measure is required when semantics is present.")
         return self
 
 

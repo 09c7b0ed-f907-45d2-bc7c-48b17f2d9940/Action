@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
-from typing import Callable, List, Optional, cast
+from typing import List, Optional, cast
 
 from src.domain.dto.charts.types import ChartAxis
 from src.domain.graphql.request import DataOrigin, MetricRequest
 from src.domain.graphql.ssot_enums import MetricType
 from src.domain.langchain import schema as S
+from src.executors.planning.ssot_metric_defaults import get_distribution_defaults, get_histogram_axes
 
 
 def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
@@ -43,9 +44,8 @@ def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
 def _resolve_numeric_request_options(
     plan_chart: S.ChartSpec,
     metric_code: str,
-    derive_defaults_fn: Callable[[str], tuple[int, int, int]],
 ) -> tuple[int, int, int]:
-    default_bins, default_min, default_max = derive_defaults_fn(metric_code)
+    default_bins, default_min, default_max = get_distribution_defaults(metric_code)
 
     resolved_bins = default_bins
     resolved_lower = default_min
@@ -82,8 +82,6 @@ def _has_value_domain_override(plan_chart: S.ChartSpec) -> bool:
 
 def build_metric_requests(
     plan_chart: S.ChartSpec,
-    derive_defaults_fn: Callable[[str], tuple[int, int, int]],
-    axis_from_meta_fn: Callable[[str, int, int], tuple[ChartAxis, ChartAxis]],
 ) -> tuple[List[MetricRequest], Optional[tuple[ChartAxis, ChartAxis]], List[Optional[DataOrigin]], List[Optional[str]]]:
     metric_requests: List[MetricRequest] = []
     metric_data_origins: List[Optional[DataOrigin]] = []
@@ -103,7 +101,6 @@ def build_metric_requests(
         resolved_bins, resolved_min, resolved_max = _resolve_numeric_request_options(
             plan_chart=plan_chart,
             metric_code=metric.metric,
-            derive_defaults_fn=derive_defaults_fn,
         )
 
         if include_distribution:
@@ -115,7 +112,7 @@ def build_metric_requests(
 
             if len(plan_chart.metrics) == 1:
                 if chart_type_upper == "HISTOGRAM":
-                    derived_axes = axis_from_meta_fn(metric.metric, resolved_min, resolved_max)
+                    derived_axes = get_histogram_axes(metric.metric, resolved_min, resolved_max)
         elif include_bounds:
             metric_request = metric_request.with_bounds(lower=resolved_min, upper=resolved_max)
 

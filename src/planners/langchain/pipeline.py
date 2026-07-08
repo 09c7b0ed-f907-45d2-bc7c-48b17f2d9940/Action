@@ -114,32 +114,6 @@ def _extract_json_block(text: str) -> str:
     return candidate[start : end + 1]
 
 
-def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
-    """Reject ambiguous planner output instead of auto-correcting it.
-
-    Empty dict items in group_by (e.g., group_by=[{}]) can be coerced by the
-    schema Union into unintended groupings. We fail fast so retry feedback forces
-    the model to return an explicit valid group_by spec or null.
-    """
-    charts_any = payload.get("charts")
-    if not isinstance(charts_any, list):
-        return
-    chart_entries = cast(List[Any], charts_any)
-
-    for chart_idx, chart_any in enumerate(chart_entries):
-        if not isinstance(chart_any, dict):
-            continue
-        chart = cast(Dict[str, Any], chart_any)
-        group_by_any = chart.get("group_by")
-        if not isinstance(group_by_any, list):
-            continue
-        group_by_entries = cast(List[Any], group_by_any)
-
-        for gb_idx, item in enumerate(group_by_entries):
-            if isinstance(item, dict) and not item:
-                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
-
-
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     import json
 
@@ -147,7 +121,6 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
-        _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -155,7 +128,6 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
-    _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
 
 
@@ -460,9 +432,9 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "system",
             "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
             "For every chart, you MUST include a semantics object with intent, measure, and any relevant splits/time semantics. "
-            "During transition, keep existing fields (chart_type, group_by, filters, metrics) aligned with semantics so current execution remains deterministic. "
+            "Charts must not include planner-facing group_by; use semantics.splits and semantics.time instead. "
             "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
-            "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
+            "Use the reasoning and prior examples. Place detected entities into metrics, semantics, and filters. "
             "When scope is semantic (my hospital, hospital name, provider-group name, country average, all accessible), prefer metric-level originScope instead of dataOrigin. "
             "Use originScope.scopeType from: mine, provider_name, provider_group_name, country_code, country_average, all_accessible, provider_id, provider_group_id. "
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
@@ -470,13 +442,12 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
             "Numeric resolution guidance: put numeric range/bucketing controls at chart level in numericResolution (valueDomain/bucketing), never under metric objects. "
             "Use numericResolution.valueDomain for explicit lower/upper bounds and numericResolution.bucketing for bucketCount/bucketSize when the user asks for binning granularity. "
-            "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
+            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple semantic splits. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
-            "Time grouping guidance: When group_by entity is quarter or quarterly, use GroupByTime with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR. Never emit an empty object for group_by entries."
-            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop group_by or other dimensions unless explicitly asked. "
+            "Time grouping guidance: When the user asks for quarter or quarterly, use semantics.time with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR."
+            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, semantics, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop semantics unless explicitly asked. "
             "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
             "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter.",
         ),
