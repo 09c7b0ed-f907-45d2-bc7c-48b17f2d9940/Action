@@ -76,6 +76,103 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
         self.assertEqual(and_filters[1].operator, "LE")
         self.assertEqual(and_filters[1].value, "2023-12-31")
 
+    def test_builds_deterministic_statistical_plan_for_provider_id_comparison(self) -> None:
+        entities = {
+            "metric": ["DTN"],
+            "provider_id": ["provider 289", "provider 252"],
+            "date": ["2023-01-01", "2023-12-31"],
+            "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+        }
+
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+            ),
+        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            outcome = orchestrate_visualization_request(
+                question="Run a Mann-Whitney U test for DTN between provider 289 and provider 252",
+                entities=entities,
+                include_plan=True,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "deterministic_statistical_plan")
+        self.assertIsNotNone(outcome.plan)
+        self.assertFalse(llm_plan.called)
+
+        test = outcome.plan.statistical_tests[0]
+        self.assertEqual(test.test_type, "MANN_WHITNEY_U_TEST")
+        self.assertEqual(test.metrics[0].data_origin.provider_id, [289])
+        self.assertEqual(test.metrics[1].data_origin.provider_id, [252])
+
+    def test_prefers_provider_group_ids_when_both_id_types_present(self) -> None:
+        entities = {
+            "metric": ["DTN"],
+            "provider_group_id": ["provider group 2825", "provider group 3001"],
+            "provider_id": ["provider 289", "provider 252"],
+            "date": ["2023-01-01", "2023-12-31"],
+            "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+        }
+
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+            ),
+        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            outcome = orchestrate_visualization_request(
+                question="Run a Mann-Whitney U test for DTN between provider group 2825 and provider group 3001",
+                entities=entities,
+                include_plan=True,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "deterministic_statistical_plan")
+        self.assertIsNotNone(outcome.plan)
+        self.assertFalse(llm_plan.called)
+
+        test = outcome.plan.statistical_tests[0]
+        self.assertEqual(test.metrics[0].data_origin.provider_group_id, [2825])
+        self.assertEqual(test.metrics[1].data_origin.provider_group_id, [3001])
+        self.assertIsNone(test.metrics[0].data_origin.provider_id)
+        self.assertIsNone(test.metrics[1].data_origin.provider_id)
+
+    def test_prefers_provider_ids_when_question_mentions_provider_not_group(self) -> None:
+        entities = {
+            "metric": ["DTN"],
+            "provider_group_id": ["provider group 2825", "provider group 3001"],
+            "provider_id": ["provider 289", "provider 252"],
+            "date": ["2023-01-01", "2023-12-31"],
+            "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+        }
+
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+            ),
+        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            outcome = orchestrate_visualization_request(
+                question="Run a Mann-Whitney U test for DTN between provider 289 and provider 252",
+                entities=entities,
+                include_plan=True,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "deterministic_statistical_plan")
+        self.assertIsNotNone(outcome.plan)
+        self.assertFalse(llm_plan.called)
+
+        test = outcome.plan.statistical_tests[0]
+        self.assertEqual(test.metrics[0].data_origin.provider_id, [289])
+        self.assertEqual(test.metrics[1].data_origin.provider_id, [252])
+        self.assertIsNone(test.metrics[0].data_origin.provider_group_id)
+        self.assertIsNone(test.metrics[1].data_origin.provider_group_id)
+
 
 if __name__ == "__main__":
     unittest.main()

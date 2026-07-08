@@ -78,6 +78,19 @@ _STAT_TEST_ENTITY_KEYS = {
     "test_types",
 }
 
+_STATISTICAL_COHORT_ENTITY_KEYS = {
+    "provider_id",
+    "provider_group_id",
+    "provider_name",
+    "provider_group_name",
+    "country_code",
+    "country_average",
+    "sex",
+    "stroke_type",
+    "age",
+    "mine",
+}
+
 _STAT_TEST_KEYWORDS = (
     "statistical test",
     "mann-whitney",
@@ -86,6 +99,19 @@ _STAT_TEST_KEYWORDS = (
     "significant",
     "significance",
     "difference between",
+)
+
+_PROVIDER_GROUP_HINTS = (
+    "provider group",
+    "provider-group",
+    "cohort a is group",
+    "cohort b is group",
+)
+
+_PROVIDER_HINTS = (
+    "provider ",
+    "cohort a is provider",
+    "cohort b is provider",
 )
 
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
@@ -307,6 +333,20 @@ def _extract_provider_group_ids(entities: Dict[str, Any]) -> List[int]:
     return out
 
 
+def _extract_provider_ids(entities: Dict[str, Any]) -> List[int]:
+    raw_values = _extract_string_list(entities.get("provider_id"))
+    out: List[int] = []
+    for token in raw_values:
+        for match in re.findall(r"\d+", token):
+            try:
+                provider_id = int(match)
+            except Exception:
+                continue
+            if provider_id > 0 and provider_id not in out:
+                out.append(provider_id)
+    return out
+
+
 def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
     metrics = _extract_string_list(entities.get("metric"))
     if not metrics:
@@ -322,6 +362,108 @@ def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
     if len(ordered) < 2:
         return None
     return ordered[0], ordered[-1]
+
+
+def _extract_statistical_cohort_tokens(entities: Dict[str, Any]) -> List[str]:
+    tokens: List[str] = []
+
+    for key in _STATISTICAL_COHORT_ENTITY_KEYS:
+        value = entities.get(key)
+        if value is None:
+            continue
+
+        if key == "mine" and bool(value):
+            tokens.append("mine")
+            continue
+
+        if isinstance(value, str):
+            token = value.strip()
+            if token:
+                tokens.append(token)
+            continue
+
+        if isinstance(value, list):
+            for item in cast(List[Any], value):
+                if isinstance(item, str) and item.strip():
+                    tokens.append(item.strip())
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        marker = token.strip().lower()
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        normalized.append(token.strip())
+    return normalized
+
+
+def _question_mentions_provider_group(question: str) -> bool:
+    low = (question or "").strip().lower()
+    if not low:
+        return False
+    return any(hint in low for hint in _PROVIDER_GROUP_HINTS)
+
+
+def _question_mentions_provider(question: str) -> bool:
+    low = (question or "").strip().lower()
+    if not low:
+        return False
+    if _question_mentions_provider_group(low):
+        return False
+    return any(hint in low for hint in _PROVIDER_HINTS)
+
+
+def _validate_statistical_entity_readiness(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
+    if not _has_statistical_test_signal(question, entities):
+        return None
+
+    provider_group_ids = _extract_provider_group_ids(entities)
+    provider_ids = _extract_provider_ids(entities)
+    mentions_provider_group = _question_mentions_provider_group(question)
+    mentions_provider = _question_mentions_provider(question)
+
+    if mentions_provider_group and len(provider_group_ids) < 2:
+        return VisualizationRequestOutcome(
+            decision="clarify",
+            reason="missing_provider_group_cohorts",
+            message=(
+                "Your request mentions provider groups, but I do not have two provider-group cohorts. "
+                "Please provide provider group A and provider group B explicitly."
+            ),
+            clarification_type="analysis_plan",
+            clarification_options=[],
+            missing_fields=["provider_group_id"],
+        )
+
+    if mentions_provider and len(provider_ids) < 2:
+        return VisualizationRequestOutcome(
+            decision="clarify",
+            reason="missing_provider_cohorts",
+            message=(
+                "Your request mentions providers, but I do not have two provider cohorts. "
+                "Please provide provider A and provider B explicitly."
+            ),
+            clarification_type="analysis_plan",
+            clarification_options=[],
+            missing_fields=["provider_id"],
+        )
+
+    cohort_tokens = _extract_statistical_cohort_tokens(entities)
+    if len(cohort_tokens) < 2:
+        return VisualizationRequestOutcome(
+            decision="clarify",
+            reason="missing_statistical_cohorts",
+            message=(
+                "I can run this statistical test only with two explicit cohorts. "
+                "Please provide cohort A and cohort B (for example two providers or provider groups)."
+            ),
+            clarification_type="analysis_plan",
+            clarification_options=[],
+            missing_fields=["statistical_cohorts"],
+        )
+
+    return None
 
 
 def _coerce_origin_scope(scope_type: str, value: Any = None, label: Optional[str] = None, country_code: Optional[str] = None) -> OriginScopeSpec:
@@ -373,7 +515,10 @@ def _build_deterministic_statistical_plan(
 
     metric = _extract_metric_code(entities)
     provider_group_ids = _extract_provider_group_ids(entities)
+    provider_ids = _extract_provider_ids(entities)
     semantic_scopes = _extract_semantic_scopes(entities)
+    mentions_provider_group = _question_mentions_provider_group(question)
+    mentions_provider = _question_mentions_provider(question)
     bounds = _extract_date_bounds(entities)
 
     if metric is None or bounds is None:
@@ -387,12 +532,33 @@ def _build_deterministic_statistical_plan(
             MetricSpec(metric=metric, originScope=semantic_scopes[0]),
             MetricSpec(metric=metric, originScope=semantic_scopes[1]),
         ]
+    elif mentions_provider_group and len(provider_group_ids) >= 2:
+        cohort_a = provider_group_ids[0]
+        cohort_b = provider_group_ids[1]
+        metrics = [
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerGroupId=[cohort_a])),
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerGroupId=[cohort_b])),
+        ]
+    elif mentions_provider and len(provider_ids) >= 2:
+        cohort_a = provider_ids[0]
+        cohort_b = provider_ids[1]
+        metrics = [
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerId=[cohort_a])),
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerId=[cohort_b])),
+        ]
     elif len(provider_group_ids) >= 2:
         cohort_a = provider_group_ids[0]
         cohort_b = provider_group_ids[1]
         metrics = [
             MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerGroupId=[cohort_a])),
             MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerGroupId=[cohort_b])),
+        ]
+    elif len(provider_ids) >= 2:
+        cohort_a = provider_ids[0]
+        cohort_b = provider_ids[1]
+        metrics = [
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerId=[cohort_a])),
+            MetricSpec(metric=metric, dataOrigin=DataOriginSpec(providerId=[cohort_b])),
         ]
     else:
         return None
@@ -578,6 +744,15 @@ def orchestrate_visualization_request(
         try:
             report("Analyzing request intent and feasibility")
             logger.info("Orchestrator input - question: %s, entities: %s", question, entities)
+
+            stats_entity_validation = _validate_statistical_entity_readiness(question, entities)
+            if stats_entity_validation is not None:
+                logger.info(
+                    "Orchestrator clarification: %s",
+                    stats_entity_validation.reason,
+                )
+                return stats_entity_validation
+
             stage1 = _decision_stage(question, entities, language, conversation_history=conversation_history)
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",

@@ -86,7 +86,7 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
         self.assertEqual(series[0].data[0].x, "2023-03")
         self.assertIsNone(series[0].data[0].y)
 
-    def test_map_metrics_payload_to_series_does_not_infer_grouped_mode_from_label_parts_only(self) -> None:
+    def test_map_metrics_payload_to_series_fails_when_distribution_payload_missing(self) -> None:
         kpi = SimpleNamespace(
             kpi1=SimpleNamespace(
                 median=14.0,
@@ -100,16 +100,16 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
         )
         metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
 
-        series = map_metrics_payload_to_series(
-            metrics_payload=metric_payload,
-            label_parts=["MALE"],
-            include_metric_alias=True,
-            group_by_field=None,
-            add_time_period_labels=False,
-        )
+        with self.assertRaises(ValueError) as err:
+            map_metrics_payload_to_series(
+                metrics_payload=metric_payload,
+                label_parts=["MALE"],
+                include_metric_alias=True,
+                group_by_field=None,
+                add_time_period_labels=False,
+            )
 
-        # Without explicit group_by_field or time labels, mapper should not infer grouped mode.
-        self.assertEqual(len(series), 0)
+        self.assertIn("missing d1", str(err.exception))
 
     def test_compile_chart_grouping_month_and_sex_requires_explicit_temporal_bounds(self) -> None:
         chart = S.ChartSpec(
@@ -126,6 +126,56 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             compile_chart_grouping(chart)
         self.assertIn("explicit time window/range", str(ctx.exception))
+
+    def test_map_metrics_payload_to_series_raises_on_non_numeric_grouped_case_count(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(
+                median=None,
+                mean=None,
+                case_count=["not-a-number"],
+                d1=None,
+            ),
+            grouped_by=SimpleNamespace(group_item_name="MALE"),
+            time_period=SimpleNamespace(start_date="2023-03-01", end_date="2023-03-31"),
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        with self.assertRaises(ValueError) as err:
+            map_metrics_payload_to_series(
+                metrics_payload=metric_payload,
+                label_parts=[],
+                include_metric_alias=True,
+                group_by_field="SEX",
+                add_time_period_labels=True,
+            )
+
+        self.assertIn("case_count", str(err.exception))
+
+    def test_map_metrics_payload_to_series_raises_when_distribution_d1_missing(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(
+                median=14.0,
+                mean=None,
+                case_count=[],
+                d1=None,
+            ),
+            grouped_by=None,
+            time_period=None,
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        with self.assertRaises(ValueError) as err:
+            map_metrics_payload_to_series(
+                metrics_payload=metric_payload,
+                label_parts=[],
+                include_metric_alias=True,
+                group_by_field=None,
+                add_time_period_labels=False,
+            )
+
+        self.assertIn("missing d1", str(err.exception))
 
 
 if __name__ == "__main__":

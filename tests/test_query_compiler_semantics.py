@@ -94,3 +94,42 @@ def test_compile_chart_grouping_requires_semantic_measure() -> None:
         assert False, "Expected ValueError when semantics.measure is missing"
     except ValueError as exc:
         assert "semantics.measure" in str(exc)
+
+
+def test_compile_chart_grouping_rejects_semantic_split_with_empty_categories() -> None:
+    chart = S.ChartSpec(
+        chart_type="BAR",
+        metrics=[S.MetricSpec(metric="DTN")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="COMPARISON",
+            measure=S.MeasureSemanticsSpec(type="COUNT"),
+            splits=[S.SplitSpec(kind="CANONICAL", field="FOO", categories=[])],
+        ),
+    )
+
+    try:
+        compile_chart_grouping(chart)
+        assert False, "Expected ValueError when semantic split has no categories"
+    except ValueError as exc:
+        assert "produced no categories" in str(exc)
+
+
+def test_compile_chart_grouping_rejects_invalid_time_range_bound_format() -> None:
+    chart = S.ChartSpec(
+        chart_type="LINE",
+        metrics=[S.MetricSpec(metric="DTN")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(
+                grain="MONTH",
+                window=S.TimeRange(start_date="not-a-date", end_date="2023-12-31"),
+            ),
+        ),
+    )
+
+    try:
+        compile_chart_grouping(chart)
+        assert False, "Expected ValueError when semantic time range is not ISO-formatted"
+    except ValueError as exc:
+        assert "requires ISO date values" in str(exc)

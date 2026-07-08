@@ -22,7 +22,6 @@ from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
-from src.planners.langchain import pipeline as lang_pipeline
 from src.planners.langchain.request_orchestrator import (
     orchestrate_visualization_request,
 )
@@ -174,6 +173,19 @@ def _emit_next_metric_followup(
             },
         ],
     )
+
+
+def _collect_planner_diagnostics() -> Optional[Dict[str, Any]]:
+    # Diagnostics are optional and must never break request handling.
+    try:
+        from src.planners.langchain import pipeline
+
+        diagnostics_any = pipeline.get_plan_cache_diagnostics()
+        if isinstance(diagnostics_any, dict):
+            return cast(Dict[str, Any], diagnostics_any)
+    except Exception:
+        logger.debug("Planner diagnostics unavailable", exc_info=True)
+    return None
 
 
 def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
@@ -841,7 +853,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         )
 
                     ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                    ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
+                    ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = _collect_planner_diagnostics()
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", False)],
                         proceed=True,
@@ -965,7 +977,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
 
                 ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
+                ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = _collect_planner_diagnostics()
 
                 ctx.say(
                     json_message={
@@ -1138,7 +1150,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     plan_obj = outcome.plan if isinstance(outcome.plan, lang_schema.AnalysisPlan) else None
                     if plan_obj is None:
                         raise RuntimeError("Orchestrator returned proceed without an analysis plan")
-                    planner_diagnostics = lang_pipeline.get_plan_cache_diagnostics()
+                    planner_diagnostics = _collect_planner_diagnostics()
 
                 if plan_obj is not None:
                     empty_plan_message = _build_empty_plan_clarification(plan_obj, language)

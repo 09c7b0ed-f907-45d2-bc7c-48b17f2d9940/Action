@@ -887,53 +887,14 @@ class StatisticalTestSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_test_groupby(self) -> "StatisticalTestSpec":
-        """Ensure no duplicate group_by specs and single-instance constraints similar to charts.
-
-        - Only one GroupBySex / GroupByStrokeType / GroupByAge / GroupByNIHSS per test.
-        - GroupByBoolean: only one per boolean_type.
-        - Allow multiple distinct GroupByCanonicalField but no duplicates of same field.
-        """
+        """Statistical tests must use explicit metric cohorts, not chart-like grouping semantics."""
         gb = self.group_by or []
         if not gb:
             return self
 
-        seen: set[GroupBySpec] = set()
-        sex = stroke = age = nihss = time = 0
-        boolean_types: dict[str, int] = {}
-        canonical_fields: set[str] = set()
-        for g in gb:
-            if g in seen:
-                raise ValueError("Duplicate group_by spec in statistical test.")
-            seen.add(g)
-            if isinstance(g, GroupBySex):
-                sex += 1
-                if sex > 1:
-                    raise ValueError("Only one GroupBySex allowed in a statistical test.")
-            elif isinstance(g, GroupByStrokeType):
-                stroke += 1
-                if stroke > 1:
-                    raise ValueError("Only one GroupByStrokeType allowed in a statistical test.")
-            elif isinstance(g, GroupByAge):
-                age += 1
-                if age > 1:
-                    raise ValueError("Only one GroupByAge allowed in a statistical test.")
-            elif isinstance(g, GroupByNIHSS):
-                nihss += 1
-                if nihss > 1:
-                    raise ValueError("Only one GroupByNIHSS allowed in a statistical test.")
-            elif isinstance(g, GroupByTime):
-                time += 1
-                if time > 1:
-                    raise ValueError("Only one GroupByTime allowed in a statistical test.")
-            elif isinstance(g, GroupByBoolean):
-                boolean_types[g.boolean_type] = boolean_types.get(g.boolean_type, 0) + 1
-            elif isinstance(g, GroupByCanonicalField):
-                if g.field in canonical_fields:
-                    raise ValueError("Duplicate GroupByCanonicalField for same field in statistical test.")
-                canonical_fields.add(g.field)
-        for bt, ct in boolean_types.items():
-            if ct > 1:
-                raise ValueError(f"Duplicate GroupByBoolean for boolean_type '{bt}' in statistical test.")
+        raise ValueError(
+            "Statistical tests do not support group_by. Define explicit cohorts via metric-level origins/filters."
+        )
         return self
 
 

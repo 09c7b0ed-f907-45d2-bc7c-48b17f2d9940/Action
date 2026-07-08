@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from src.domain.langchain.schema import ChartSpec
+from src.domain.langchain.schema import ChartSpec, GroupBySex, MetricSpec, StatisticalTestSpec
 
 
 class SemanticIntentSchemaTests(unittest.TestCase):
@@ -99,6 +99,16 @@ class SemanticIntentSchemaTests(unittest.TestCase):
                     },
                 }
             )
+
+    def test_statistical_test_rejects_group_by(self) -> None:
+        with self.assertRaises(ValidationError) as err:
+            StatisticalTestSpec(
+                test_type="MANN_WHITNEY_U_TEST",
+                metrics=[MetricSpec(metric="DTN")],
+                group_by=[GroupBySex(categories=["MALE", "FEMALE"])],
+            )
+
+        self.assertIn("do not support group_by", str(err.exception))
 
 
 if __name__ == "__main__":

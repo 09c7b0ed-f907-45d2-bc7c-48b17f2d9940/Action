@@ -22,8 +22,10 @@ def period_to_label(tp: TimePeriod) -> str:
         try:
             dt = datetime.fromisoformat(start)
             return dt.strftime("%Y-%m")
-        except Exception:
-            pass
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid ISO start date in time period: {start!r}"
+            ) from exc
     if isinstance(start, str) and isinstance(end, str) and start and end:
         return f"{start} to {end}"
     if isinstance(start, str) and start:
@@ -106,8 +108,10 @@ def map_metrics_payload_to_series(
                     try:
                         dt = datetime.fromisoformat(str(tp_start))
                         x_value = dt.strftime("%Y-%m")
-                    except Exception:
-                        x_value = f"{tp_start} to {tp_end}" if tp_end else str(tp_start)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Invalid ISO date in grouped time period label: {tp_start!r}"
+                        ) from exc
                 elif server_label:
                     mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                     x_value = mapped or server_label
@@ -122,13 +126,17 @@ def map_metrics_payload_to_series(
                 elif kpi.kpi1.case_count:
                     try:
                         y_value = float(kpi.kpi1.case_count[0])
-                    except Exception:
-                        y_value = None
+                    except (TypeError, ValueError, IndexError) as exc:
+                        raise ValueError(
+                            "Grouped KPI case_count must provide a numeric first value"
+                        ) from exc
 
                 # Preserve explicit time buckets as missing points (y=None)
                 # so frontend can render gaps instead of implied zeros.
                 if y_value is None and not (add_time_period_labels and tp_start):
-                    continue
+                    raise ValueError(
+                        "Grouped KPI row is missing numeric y-value (median/mean/case_count[0])."
+                    )
 
                 name_parts: List[str] = []
                 if include_metric_alias:
@@ -150,7 +158,9 @@ def map_metrics_payload_to_series(
                 continue
 
             if not kpi.kpi1.d1:
-                continue
+                raise ValueError(
+                    "Distribution KPI payload is missing d1 histogram/series data."
+                )
 
             parts: List[str] = []
             if include_metric_alias:

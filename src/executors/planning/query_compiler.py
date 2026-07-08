@@ -184,7 +184,7 @@ def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str
     context: dict[str, Any] = {
         "event": event,
         "operation": operation,
-        "outcome": "degraded",
+        "outcome": "failure",
     }
     for key, value in fields.items():
         if value is None:
@@ -276,18 +276,9 @@ class Dimension:
                     try:
                         return datetime.fromisoformat(text).date()
                     except Exception:
-                        logger.debug(
-                            "Failed to parse GroupByTime date; returning None",
-                            exc_info=True,
-                            extra=_compiler_log_context(
-                                event="query_compiler.groupby_time.date_parse_fallback",
-                                operation="Dimension.categories",
-                                dimension_type=type(self.spec).__name__,
-                                grain=str(time_spec.grain).upper(),
-                                raw_value=text,
-                            ),
+                        raise ValueError(
+                            "Semantic time grouping requires ISO date values in window bounds"
                         )
-                        return None
 
             window = time_spec.window
             grain = str(time_spec.grain).upper()
@@ -400,22 +391,11 @@ class Dimension:
         if isinstance(self.spec, GroupByCanonicalField):
             return self.spec.field
         if isinstance(self.spec, GroupByTime):
-            time_spec = self.spec
             try:
                 start, end = cat
                 return f"{start.isoformat()} to {end.isoformat()}"
             except Exception:
-                logger.debug(
-                    "Failed to format GroupByTime label; using grain fallback",
-                    exc_info=True,
-                    extra=_compiler_log_context(
-                        event="query_compiler.groupby_time.label_fallback",
-                        operation="Dimension.label_for",
-                        dimension_type=type(self.spec).__name__,
-                        grain=str(time_spec.grain).upper(),
-                    ),
-                )
-                return time_spec.grain
+                raise ValueError("Semantic time grouping produced an invalid time bucket label")
         return str(cat)
 
     def filter_for(self, cat: Any) -> Optional[Any]:
@@ -450,21 +430,10 @@ class Dimension:
                 ],
             )
         if isinstance(self.spec, GroupByTime):
-            time_spec = self.spec
             try:
                 start, end = cat
             except Exception:
-                logger.debug(
-                    "Failed to unpack GroupByTime category; skipping filter generation",
-                    exc_info=True,
-                    extra=_compiler_log_context(
-                        event="query_compiler.groupby_time.filter_fallback",
-                        operation="Dimension.filter_for",
-                        dimension_type=type(self.spec).__name__,
-                        grain=str(time_spec.grain).upper(),
-                    ),
-                )
-                return None
+                raise ValueError("Semantic time grouping produced an invalid time bucket filter")
             return LogicalFilter(
                 operator="AND",
                 children=[
@@ -544,18 +513,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
                     start, end = cat
                     batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
                 except Exception:
-                    logger.debug(
-                        "Failed to build batched time period; skipping invalid time bucket",
-                        exc_info=True,
-                        extra=_compiler_log_context(
-                            event="query_compiler.batched_time_period.skipped",
-                            operation="compile_chart_grouping",
-                            chart_type=chart.chart_type,
-                            dimension_type=type(batched_time_dim.spec).__name__,
-                            grain=str(batched_time_spec.grain).upper(),
-                        ),
-                    )
-                    continue
+                    raise ValueError("Semantic time grouping produced an invalid batched time period")
     if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
         batched_time_spec = batched_time_dim.spec
         if isinstance(batched_time_spec, GroupByTime):
@@ -604,10 +562,14 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     for d in filter_dims:
         cats = d.categories()
         if not cats:
-            continue
+            raise ValueError(
+                f"Semantic split '{type(d.spec).__name__}' produced no categories for retrieval compilation"
+            )
         sample_filter = d.filter_for(cats[0])
         if sample_filter is None:
-            continue
+            raise ValueError(
+                f"Semantic split '{type(d.spec).__name__}' produced an invalid filter for retrieval compilation"
+            )
         effective_filter_dims.append(d)
         filter_categories.append(cats)
 

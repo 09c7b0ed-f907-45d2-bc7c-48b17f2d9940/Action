@@ -1,5 +1,6 @@
 import unittest
 
+from src.domain.dto.charts.types import ChartPoint
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.langchain import schema as S
 from src.executors.mapping.chart_builder import build_chart_dto
@@ -65,6 +66,56 @@ class ChartBuilderSemanticsTests(unittest.TestCase):
                     measure=S.MeasureSemanticsSpec(type="MEAN"),
                 ),
             )
+
+    def test_histogram_chart_raises_on_non_numeric_bin_values(self) -> None:
+        chart = S.ChartSpec(
+            chart_type="HISTOGRAM",
+            metrics=[S.MetricSpec(metric="DTN")],
+            semantics=S.AnalysisSemanticsSpec(
+                intent="DISTRIBUTION",
+                measure=S.MeasureSemanticsSpec(type="DISTRIBUTION"),
+            ),
+        )
+
+        with self.assertRaises(ValueError) as err:
+            build_chart_dto(
+                plan_chart=chart,
+                dimensions=[],
+                series=[
+                    ChartSeries(
+                        name="DTN",
+                        data=[ChartPoint.model_construct(x="bad-x", y="bad-y")],
+                    )
+                ],
+                derived_axes=None,
+            )
+
+        self.assertIn("Expected numeric chart value", str(err.exception))
+
+    def test_pie_chart_raises_on_non_numeric_slice_value(self) -> None:
+        chart = S.ChartSpec(
+            chart_type="PIE",
+            metrics=[S.MetricSpec(metric="DTN")],
+            semantics=S.AnalysisSemanticsSpec(
+                intent="COMPARISON",
+                measure=S.MeasureSemanticsSpec(type="COUNT"),
+            ),
+        )
+
+        with self.assertRaises(ValueError) as err:
+            build_chart_dto(
+                plan_chart=chart,
+                dimensions=[],
+                series=[
+                    ChartSeries(
+                        name="DTN",
+                        data=[ChartPoint.model_construct(x="A", y="not-a-number")],
+                    )
+                ],
+                derived_axes=None,
+            )
+
+        self.assertIn("Expected numeric chart value", str(err.exception))
 
 
 if __name__ == "__main__":
