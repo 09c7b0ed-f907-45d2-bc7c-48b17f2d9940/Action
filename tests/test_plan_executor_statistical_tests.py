@@ -18,6 +18,42 @@ from src.executors.planning.query_compiler import CompiledBatch, CompiledChartGr
 
 
 class PlanExecutorStatisticalTestTests(unittest.TestCase):
+    def test_to_execution_error_messages_include_actionable_guidance(self) -> None:
+        graphql_error = plan_executor._to_execution_error(["graphql_error"], trace_id="trace-1")
+        fallback_error = plan_executor._to_execution_error(["unexpected"], trace_id="trace-1")
+
+        self.assertEqual(graphql_error.code, "EXEC_GRAPHQL_ERROR")
+        self.assertIn("Please", graphql_error.user_message)
+        self.assertIn("try again", graphql_error.user_message)
+
+        self.assertEqual(fallback_error.code, "EXEC_DATA_FETCH_FAILED")
+        self.assertIn("Please", fallback_error.user_message)
+        self.assertIn("try again", fallback_error.user_message)
+
+    def test_mann_whitney_missing_distinct_cohorts_message_is_actionable(self) -> None:
+        test = StatisticalTestSpec(
+            test_type="MANN_WHITNEY_U_TEST",
+            metrics=[MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[1]))],
+            filters=AndFilter(
+                and_=[
+                    DateFilter(operator="GE", value="2023-01-01"),
+                    DateFilter(operator="LE", value="2023-12-31"),
+                ]
+            ),
+        )
+
+        with self.assertRaises(plan_executor.VisualizationExecutionError) as err:
+            plan_executor._execute_mann_whitney_test(
+                test=test,
+                user_sub="user-1",
+                trace_id="trace-1",
+            )
+
+        self.assertEqual(err.exception.reason, "missing_statistical_cohorts")
+        self.assertIn("Please provide", err.exception.user_message)
+        self.assertIn("cohort A", err.exception.user_message)
+        self.assertIn("cohort B", err.exception.user_message)
+
     def test_mann_whitney_returns_clarification_when_no_cohort_rows_exist(self) -> None:
         test = StatisticalTestSpec(
             test_type="MANN_WHITNEY_U_TEST",

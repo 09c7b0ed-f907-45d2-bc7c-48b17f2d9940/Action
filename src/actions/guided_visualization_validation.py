@@ -425,7 +425,14 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 )
             }
 
-        _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
+        _utter_invalid(
+            dispatcher,
+            translate(
+                "action.guided.hospital_scope_invalid",
+                language=language,
+                default="I could not match that hospital scope. Please provide a hospital name, provider group, or say all hospitals.",
+            ),
+        )
         return {"guided_hospital_scope": None}
 
 

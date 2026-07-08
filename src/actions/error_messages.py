@@ -51,7 +51,14 @@ def friendly_hospital_error(exc: Exception, language: str | None = None) -> str:
         details = _mapping_to_dict(exc.details)
         proxy_info = _mapping_to_dict(details.get("proxy"))
         reason_any = proxy_info.get("reason")
-        reason = reason_any.strip().lower() if isinstance(reason_any, str) and reason_any.strip() else ""
+        reason = ""
+        if isinstance(reason_any, str):
+            token = reason_any.strip().lower()
+            if token:
+                reason = token
+        elif reason_any is not None:
+            # Keep this explicit to avoid silently depending on unstable proxy payload shapes.
+            reason = ""
 
         if exc.status_code == 401 or "no cached user access token" in reason or "user token unavailable" in reason:
             return translate("action.errors.hospital_auth_unavailable", language=language)

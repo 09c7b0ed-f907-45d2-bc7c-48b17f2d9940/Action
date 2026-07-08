@@ -561,8 +561,8 @@ def _execute_temporal_pair_mann_whitney(
     if shared_origin is None:
         raise VisualizationExecutionError(
             user_message=(
-                "Temporal Mann-Whitney U requires explicit cohort origins. "
-                "Please specify both cohorts clearly."
+                "Please specify both cohorts explicitly for the Mann-Whitney U test, "
+                "including the hospitals or groups you want to compare."
             ),
             reason="missing_statistical_cohorts",
             code="EXEC_STATS_MISSING_COHORTS",
@@ -790,7 +790,8 @@ def _execute_mann_whitney_test(
     if data_origin_payload_a is None or data_origin_payload_b is None:
         raise VisualizationExecutionError(
             user_message=(
-                "Mann-Whitney U requires explicit cohort origins for both cohorts."
+                "Please provide explicit cohort origins for both cohorts, such as "
+                "provider IDs or provider-group IDs."
             ),
             reason="missing_statistical_cohorts",
             code="EXEC_STATS_MISSING_COHORTS",
@@ -940,6 +941,24 @@ def _emit_compiler_diagnostics(
 
 
 class VisualizationExecutionError(RuntimeError):
+    """Structured execution error surfaced from Action executor paths.
+
+    Field contract:
+    - ``reason`` is a stable internal classifier for diagnostics and branching.
+    - ``code`` is a stable machine-readable token used by downstream handlers.
+    - ``user_message`` is clinician-facing guidance and must be actionable.
+
+    Statistical execution codes used in this module:
+    - ``EXEC_STATS_MISSING_METRIC``: no metric provided for Mann-Whitney U.
+    - ``EXEC_STATS_INELIGIBLE_METRIC``: requested metric is unsupported for the test.
+    - ``EXEC_STATS_MISSING_COHORTS``: two explicit and distinct cohorts were not provided.
+    - ``EXEC_STATS_MISSING_DATE_BOUNDS``: explicit start/end dates are missing.
+    - ``EXEC_STATS_EMPTY_COHORT``: one or both cohorts have no usable data.
+    - ``EXEC_STATS_UNAUTHORIZED_COHORT``: cohort access is not authorized.
+    - ``EXEC_STATS_QUERY_FAILED``: upstream statistical query failed unexpectedly.
+    - ``EXEC_STATS_INVALID_FILTER``: cohort filter shape is unsupported.
+    """
+
     def __init__(
         self,
         user_message: str,
@@ -997,7 +1016,7 @@ def _to_execution_error(
         )
     if "graphql_error" in reason_set:
         return VisualizationExecutionError(
-            user_message="The analytics service returned an error while generating the visualization.",
+            user_message="The analytics service returned an error while generating this visualization. Please adjust the filters or try again.",
             reason="graphql_error",
             code="EXEC_GRAPHQL_ERROR",
             trace_id=trace_id,
@@ -1010,7 +1029,7 @@ def _to_execution_error(
             trace_id=trace_id,
         )
     return VisualizationExecutionError(
-        user_message="Could not fetch analytics data for this visualization. Please try again.",
+        user_message="I could not fetch analytics data for this visualization. Please adjust the filters or try again.",
         reason="data_fetch_failed",
         code="EXEC_DATA_FETCH_FAILED",
         trace_id=trace_id,
