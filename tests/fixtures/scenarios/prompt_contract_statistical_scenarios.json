@@ -1,0 +1,95 @@
+[
+  {
+    "id": "mw_missing_cohorts",
+    "kind": "single_turn",
+    "prompt": "Run a Mann-Whitney U test for DTN",
+    "entities": {
+      "statistical_test_type": "MANN_WHITNEY_U_TEST",
+      "metric": "DTN"
+    },
+    "expected": {
+      "decision": "clarify",
+      "reason": "missing_statistical_cohorts",
+      "clarification_type": "analysis_plan",
+      "message_contains": ["two explicit cohorts", "cohort A", "cohort B"]
+    }
+  },
+  {
+    "id": "mw_empty_cohort",
+    "kind": "single_turn",
+    "prompt": "Run a Mann-Whitney U test for DTN between provider group 289 and provider group 252 from 2023-01-01 to 2023-12-31",
+    "entities": {
+      "statistical_test_type": "MANN_WHITNEY_U_TEST",
+      "metric": "DTN",
+      "provider_group_id": ["provider group 289", "provider group 252"],
+      "date": ["2023-01-01", "2023-12-31"]
+    },
+    "expected": {
+      "decision": "proceed",
+      "plan_kind": "statistical",
+      "reason": "deterministic_statistical_plan",
+      "stats_status": "error_or_empty"
+    }
+  },
+  {
+    "id": "mw_missing_then_fix",
+    "kind": "multi_turn",
+    "turns": [
+      {
+        "prompt": "Run a Mann-Whitney U test for DTN",
+        "entities": {
+          "statistical_test_type": "MANN_WHITNEY_U_TEST",
+          "metric": "DTN"
+        },
+        "expected": {
+          "decision": "clarify",
+          "reason": "missing_statistical_cohorts"
+        }
+      },
+      {
+        "prompt": "cohort A is provider group 289 from 2023-01-01 to 2023-12-31, cohort B is provider group 252 from 2023-01-01 to 2023-12-31",
+        "entities": {
+          "statistical_test_type": "MANN_WHITNEY_U_TEST",
+          "metric": "DTN",
+          "provider_group_id": ["provider group 289", "provider group 252"],
+          "date": ["2023-01-01", "2023-12-31"]
+        },
+        "expected": {
+          "decision": "proceed",
+          "plan_kind": "statistical",
+          "reason": "deterministic_statistical_plan"
+        }
+      }
+    ]
+  },
+  {
+    "id": "mw_provider_group_phrase_missing_second_group",
+    "kind": "single_turn",
+    "prompt": "Run a Mann-Whitney U test for DTN for provider group 289",
+    "entities": {
+      "statistical_test_type": "MANN_WHITNEY_U_TEST",
+      "metric": "DTN",
+      "provider_group_id": ["provider group 289"]
+    },
+    "expected": {
+      "decision": "clarify",
+      "reason": "missing_provider_group_cohorts",
+      "clarification_type": "analysis_plan"
+    }
+  },
+  {
+    "id": "mw_provider_phrase_missing_second_provider",
+    "kind": "single_turn",
+    "prompt": "Run a Mann-Whitney U test for DTN for provider 120",
+    "entities": {
+      "statistical_test_type": "MANN_WHITNEY_U_TEST",
+      "metric": "DTN",
+      "provider_id": ["provider 120"]
+    },
+    "expected": {
+      "decision": "clarify",
+      "reason": "missing_provider_cohorts",
+      "clarification_type": "analysis_plan"
+    }
+  }
+]

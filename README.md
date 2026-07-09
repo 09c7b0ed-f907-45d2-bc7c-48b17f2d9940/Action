@@ -64,3 +64,23 @@ docker run --rm -p 5055:5055 \
   -e LLM_API_KEY=<llm-api-key> \
   ghcr.io/<org>/action:latest
 ```
+
+## Prompt Contract Test Runs
+
+Run these from the workspace root with Docker Compose so dependencies and env match service runtime.
+
+Deterministic prompt-contract suite (repo-native, no external APIs):
+
+```bash
+docker compose exec action python -m unittest tests.test_prompt_contract_suite
+```
+
+Optional live external API smoke (OpenAI + proxy GraphQL preflight):
+
+```bash
+docker compose exec -T action env RUN_EXTERNAL_API_E2E=1 python -m unittest tests.test_external_api_e2e_smoke
+```
+
+Notes:
+- The deterministic suite is the default gate for prompt behavior regressions.
+- The external smoke is opt-in and may skip GraphQL execution when proxy user token cache is not seeded for the test sender id.
