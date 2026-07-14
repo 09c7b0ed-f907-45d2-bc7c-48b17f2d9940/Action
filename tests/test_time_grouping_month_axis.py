@@ -101,3 +101,31 @@ def test_compile_chart_grouping_month_and_sex_defaults_to_recent_12_months() -> 
     assert len(batch.batched_time_periods) == 12
     # Split-by-sex remains as filter-driven series fan-out on one chart.
     assert len(batch.combos_list) == 2
+
+
+def test_map_metrics_payload_filter_split_uses_default_plotting_path() -> None:
+    kpi = SimpleNamespace(
+        kpi1=SimpleNamespace(
+            median=22.0,
+            mean=21.0,
+            case_count=[3, 7],
+            d1=SimpleNamespace(edges=["0-10", "10-20"], case_count=[3, 7]),
+        ),
+        grouped_by=None,
+        time_period=None,
+        data_origin=None,
+    )
+    metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+    series = map_metrics_payload_to_series(
+        metrics_payload=metric_payload,
+        label_parts=["MALE"],
+        include_metric_alias=False,
+        group_by_field=None,
+        add_time_period_labels=False,
+    )
+
+    assert len(series) == 1
+    assert series[0].name == "MALE"
+    assert [point.x for point in series[0].data] == ["0-10", "10-20"]
+    assert [point.y for point in series[0].data] == [3, 7]
