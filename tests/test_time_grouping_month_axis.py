@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 from src.domain.langchain import schema as S
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series
-from src.executors.planning.query_compiler import compile_chart_grouping
+from src.executors.planning.query_compiler import (
+    compile_chart_grouping,
+    is_native_typed_groupby_enabled,
+    is_server_groupby_supported,
+)
 
 
 def test_compile_chart_grouping_derives_month_periods_from_date_filters() -> None:
@@ -99,8 +103,13 @@ def test_compile_chart_grouping_month_and_sex_defaults_to_recent_12_months() -> 
     batch = compiled.batches[0]
     assert batch.batched_time_enabled is True
     assert len(batch.batched_time_periods) == 12
-    # Split-by-sex remains as filter-driven series fan-out on one chart.
-    assert len(batch.combos_list) == 2
+    # If SEX_TYPE is supported natively, sex is server_groupby and no filter split
+    # combos are needed. Otherwise, sex remains filter-driven with two combos.
+    if is_server_groupby_supported("SEX_TYPE") and is_native_typed_groupby_enabled():
+        assert batch.server_groupby == "SEX_TYPE"
+        assert len(batch.combos_list) == 1
+    else:
+        assert len(batch.combos_list) == 2
 
 
 def test_map_metrics_payload_filter_split_uses_default_plotting_path() -> None:

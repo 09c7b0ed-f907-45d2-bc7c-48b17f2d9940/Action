@@ -26,9 +26,18 @@ from src.domain.langchain.schema import (
     GroupByTime,
 )
 from src.shared.ssot_loader import get_sex_label, get_stroke_label
+from src.util import env as env_util
 from src.util.coalesce import coalesce
 
 logger = logging.getLogger(__name__)
+
+_ENABLE_NATIVE_TYPED_GROUPBY = env_util.env_flag(
+    "EXECUTOR_ENABLE_NATIVE_TYPED_GROUPBY", default=False
+)
+
+
+def is_native_typed_groupby_enabled() -> bool:
+    return _ENABLE_NATIVE_TYPED_GROUPBY
 
 
 def _collect_lc_date_bounds(node: Any) -> tuple[Optional[str], Optional[str]]:
@@ -70,7 +79,9 @@ def _parse_iso_date(value: Optional[str]) -> Optional[date]:
             return None
 
 
-def _build_month_periods_from_bounds(start_iso: Optional[str], end_iso: Optional[str]) -> List[TimePeriod]:
+def _build_month_periods_from_bounds(
+    start_iso: Optional[str], end_iso: Optional[str]
+) -> List[TimePeriod]:
     from calendar import monthrange
 
     start = _parse_iso_date(start_iso)
@@ -130,7 +141,9 @@ def _build_recent_month_periods(month_count: int = 12) -> List[TimePeriod]:
     return periods
 
 
-def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str, dict[str, Any]]:
+def _compiler_log_context(
+    event: str, operation: str, **fields: Any
+) -> dict[str, dict[str, Any]]:
     context: dict[str, Any] = {
         "event": event,
         "operation": operation,
@@ -172,8 +185,12 @@ def _resolve_server_groupby_field(spec: GroupBySpec) -> Optional[str]:
 
     candidates: List[str] = []
     if isinstance(spec, GroupBySex):
+        if not _ENABLE_NATIVE_TYPED_GROUPBY:
+            return None
         candidates = ["SEX", "SEX_TYPE"]
     elif isinstance(spec, GroupByStrokeType):
+        if not _ENABLE_NATIVE_TYPED_GROUPBY:
+            return None
         candidates = ["STROKE_TYPE"]
 
     for candidate in candidates:
@@ -390,8 +407,12 @@ class Dimension:
             return LogicalFilter(
                 operator="AND",
                 children=[
-                    IntegerFilter(property="AGE", operator=Operator("GE"), value=cat.min),
-                    IntegerFilter(property="AGE", operator=Operator("LT"), value=cat.max),
+                    IntegerFilter(
+                        property="AGE", operator=Operator("GE"), value=cat.min
+                    ),
+                    IntegerFilter(
+                        property="AGE", operator=Operator("LT"), value=cat.max
+                    ),
                 ],
             )
         if isinstance(self.spec, GroupByNIHSS):
@@ -483,10 +504,14 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
 
     filter_dims_all: List[Dimension] = [d for d in dims if d is not server_dim]
 
-    time_dims: List[Dimension] = [d for d in filter_dims_all if isinstance(d.spec, GroupByTime)]
+    time_dims: List[Dimension] = [
+        d for d in filter_dims_all if isinstance(d.spec, GroupByTime)
+    ]
     batched_time_periods: List[TimePeriod] = []
     batched_time_enabled = len(time_dims) == 1
-    batched_time_dim: Optional[Dimension] = time_dims[0] if batched_time_enabled else None
+    batched_time_dim: Optional[Dimension] = (
+        time_dims[0] if batched_time_enabled else None
+    )
     if batched_time_enabled and batched_time_dim is not None:
         batched_time_spec = batched_time_dim.spec
         if not isinstance(batched_time_spec, GroupByTime):
@@ -496,7 +521,9 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
             for cat in batched_time_dim.categories():
                 try:
                     start, end = cat
-                    batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
+                    batched_time_periods.append(
+                        TimePeriod(startDate=start.isoformat(), endDate=end.isoformat())
+                    )
                 except Exception:
                     logger.debug(
                         "Failed to build batched time period; skipping invalid time bucket",
@@ -510,13 +537,19 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
                         ),
                     )
                     continue
-    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+    if (
+        batched_time_enabled
+        and not batched_time_periods
+        and batched_time_dim is not None
+    ):
         batched_time_spec = batched_time_dim.spec
         if isinstance(batched_time_spec, GroupByTime):
             grain = str(batched_time_spec.grain).upper()
             if grain == "MONTH":
                 bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
-                batched_time_periods = _build_month_periods_from_bounds(bound_start, bound_end)
+                batched_time_periods = _build_month_periods_from_bounds(
+                    bound_start, bound_end
+                )
                 if not batched_time_periods:
                     # Keep monthly chart semantics stable when planner omitted
                     # explicit time window/date filters.
@@ -541,7 +574,9 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
                 filtered_periods.append(tp)
             if filtered_periods:
                 batched_time_periods = filtered_periods
-            elif batched_time_dim is not None and isinstance(batched_time_dim.spec, GroupByTime):
+            elif batched_time_dim is not None and isinstance(
+                batched_time_dim.spec, GroupByTime
+            ):
                 grain = str(batched_time_dim.spec.grain).upper()
                 if grain == "MONTH":
                     rebuilt = _build_month_periods_from_bounds(bound_start, bound_end)
@@ -573,7 +608,9 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
 
     batches: List[CompiledBatch] = [
         CompiledBatch(
-            server_groupby=server_dim.canonical_field() if server_dim is not None else None,
+            server_groupby=server_dim.canonical_field()
+            if server_dim is not None
+            else None,
             filter_dims=effective_filter_dims,
             combos_list=combos_list,
             batched_time_enabled=batched_time_enabled,

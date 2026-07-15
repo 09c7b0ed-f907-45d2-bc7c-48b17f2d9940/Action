@@ -8,9 +8,16 @@ from typing import Any, Dict, List, Optional, Protocol, cast
 from uuid import uuid4
 
 from src.actions.i18n import resolve_language_from_tracker, translate
-from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
+from src.actions.ssot_lookup import (
+    normalize_text,
+    resolve_catalog_candidates,
+    resolve_metric_candidates,
+)
 from src.domain.langchain import schema as S
-from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
+from src.executors.analytics_center.client import (
+    AnalyticsCenterError,
+    get_analytics_center_client,
+)
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -95,7 +102,9 @@ def _trace_id_from_tracker(tracker: TrackerLike) -> Optional[str]:
     latest_any: Any = getattr(tracker, "latest_message", None) or {}
     latest = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
     metadata_any = latest.get("metadata")
-    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+    metadata = (
+        cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+    )
 
     for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
         value = metadata.get(key)
@@ -161,7 +170,9 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
     """
 
     client = get_analytics_center_client()
-    default_scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=False)
+    default_scope = client.resolve_my_default_scope(
+        user_sub=user_sub, trace_id=trace_id, raise_on_error=False
+    )
     if isinstance(default_scope, dict):
         provider_id_any = default_scope.get("provider_id")
         if isinstance(provider_id_any, int):
@@ -171,9 +182,22 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
         if isinstance(provider_group_id_any, int):
             return _json_scope("group_id", provider_group_id_any)
 
-    page = client.list_providers(user_sub=user_sub, user=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+    page = client.list_providers(
+        user_sub=user_sub,
+        user=user_sub,
+        limit=200,
+        offset=0,
+        trace_id=trace_id,
+        raise_on_error=False,
+    )
     if not page:
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+        page = client.list_providers(
+            user_sub=user_sub,
+            limit=200,
+            offset=0,
+            trace_id=trace_id,
+            raise_on_error=False,
+        )
     providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
     providers: List[Dict[str, Any]] = []
     if isinstance(providers_any, list):
@@ -205,7 +229,11 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
         "isUserProvider",
         "isMine",
     )
-    flagged = [p for p in providers if any(_is_truthy_flag(p.get(key)) for key in default_flag_keys)]
+    flagged = [
+        p
+        for p in providers
+        if any(_is_truthy_flag(p.get(key)) for key in default_flag_keys)
+    ]
     if len(flagged) == 1:
         provider = flagged[0]
         provider_id = _extract_provider_id(provider)
@@ -237,7 +265,9 @@ def is_skip_signal(slot_value: Any, tracker: Optional[TrackerLike] = None) -> bo
 
     if tracker is not None:
         latest_any: Any = getattr(tracker, "latest_message", None) or {}
-        latest = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+        latest = (
+            cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+        )
 
         text_any = latest.get("text")
         if isinstance(text_any, str) and text_any.strip():
@@ -245,16 +275,26 @@ def is_skip_signal(slot_value: Any, tracker: Optional[TrackerLike] = None) -> bo
 
         intent_name = ""
         parse_data_any = latest.get("parse_data")
-        parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
+        parse_data = (
+            cast(Dict[str, Any], parse_data_any)
+            if isinstance(parse_data_any, dict)
+            else {}
+        )
         intent_any = parse_data.get("intent")
-        intent = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
+        intent = (
+            cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
+        )
         name_any = intent.get("name")
         if isinstance(name_any, str) and name_any.strip():
             intent_name = name_any.strip()
 
         if not intent_name:
             metadata_any = latest.get("metadata")
-            metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+            metadata = (
+                cast(Dict[str, Any], metadata_any)
+                if isinstance(metadata_any, dict)
+                else {}
+            )
             metadata_intent_any = metadata.get("intentName")
             if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
                 intent_name = metadata_intent_any.strip()
@@ -270,18 +310,28 @@ def is_skip_signal(slot_value: Any, tracker: Optional[TrackerLike] = None) -> bo
     return False
 
 
-def validate_required_metric(slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike) -> Dict[str, Any]:
+def validate_required_metric(
+    slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike
+) -> Dict[str, Any]:
     language = resolve_language_from_tracker(tracker)
     entities = _latest_entities(tracker)
-    source = entities.get("metric") if entities.get("metric") is not None else slot_value
+    source = (
+        entities.get("metric") if entities.get("metric") is not None else slot_value
+    )
     raw = source if isinstance(source, str) else str(source or "")
     candidates = resolve_metric_candidates(raw)
     if len(candidates) == 1:
         return {"metric": candidates[0]}
     if len(candidates) > 1:
-        _utter_invalid(dispatcher, translate("action.guided.validate_metric_ambiguous", language=language))
+        _utter_invalid(
+            dispatcher,
+            translate("action.guided.validate_metric_ambiguous", language=language),
+        )
         return {"metric": None}
-    _utter_invalid(dispatcher, translate("action.guided.validate_metric_invalid", language=language))
+    _utter_invalid(
+        dispatcher,
+        translate("action.guided.validate_metric_invalid", language=language),
+    )
     return {"metric": None}
 
 
@@ -309,13 +359,20 @@ def validate_optional_catalog_slot(
     return {slot_name: None}
 
 
-def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike) -> Dict[str, Any]:
+def validate_guided_hospital_scope(
+    slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike
+) -> Dict[str, Any]:
     language = resolve_language_from_tracker(tracker)
     user_sub = tracker.sender_id
     trace_id = _trace_id_from_tracker(tracker) or uuid4().hex
     client = get_analytics_center_client()
     entities = _latest_entities(tracker)
-    with log_context(trace_id=trace_id, sender_id=tracker.sender_id, user_sub=user_sub, validator="guided_hospital_scope"):
+    with log_context(
+        trace_id=trace_id,
+        sender_id=tracker.sender_id,
+        user_sub=user_sub,
+        validator="guided_hospital_scope",
+    ):
         scope_ref_any = entities.get("hospital_scope_reference")
         if isinstance(scope_ref_any, str) and scope_ref_any.strip():
             scope_ref_norm = normalize_text(scope_ref_any)
@@ -324,7 +381,9 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                     "guided_hospital_scope": _json_scope(
                         "all",
                         "all",
-                        label=translate("action.guided.all_hospitals_label", language=language),
+                        label=translate(
+                            "action.guided.all_hospitals_label", language=language
+                        ),
                     )
                 }
             if scope_ref_norm in MINE_SCOPE_TOKENS:
@@ -340,24 +399,43 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                     },
                 )
                 try:
-                    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+                    mine_scope = _resolve_mine_scope(
+                        user_sub=user_sub, trace_id=trace_id
+                    )
                 except AnalyticsCenterError as exc:
                     details = exc.details if isinstance(exc.details, dict) else {}
                     proxy_any = details.get("proxy")
-                    proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
+                    proxy_info = (
+                        cast(Dict[str, Any], proxy_any)
+                        if isinstance(proxy_any, dict)
+                        else {}
+                    )
                     reason_any = proxy_info.get("reason")
-                    reason = reason_any.strip() if isinstance(reason_any, str) and reason_any.strip() else ""
+                    reason = (
+                        reason_any.strip()
+                        if isinstance(reason_any, str) and reason_any.strip()
+                        else ""
+                    )
 
-                    if exc.status_code == 401 or "cached user access token" in reason.lower() or "user token unavailable" in reason.lower():
+                    if (
+                        exc.status_code == 401
+                        or "cached user access token" in reason.lower()
+                        or "user token unavailable" in reason.lower()
+                    ):
                         _utter_invalid(
                             dispatcher,
-                            translate("action.guided.mine_scope_auth_unavailable", language=language),
+                            translate(
+                                "action.guided.mine_scope_auth_unavailable",
+                                language=language,
+                            ),
                         )
                         return {"guided_hospital_scope": None}
 
                     _utter_invalid(
                         dispatcher,
-                        translate("action.guided.mine_scope_unknown", language=language),
+                        translate(
+                            "action.guided.mine_scope_unknown", language=language
+                        ),
                     )
                     return {"guided_hospital_scope": None}
                 if mine_scope is not None:
@@ -368,16 +446,46 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 )
                 return {"guided_hospital_scope": None}
 
-        country_any = entities.get("country_code") or entities.get("countryCode") or entities.get("country")
+        country_any = (
+            entities.get("country_code")
+            or entities.get("countryCode")
+            or entities.get("country")
+        )
         if isinstance(country_any, str) and country_any.strip():
-            resolved = client.resolve_country_code(user_sub=user_sub, country_input=country_any.strip(), trace_id=trace_id, raise_on_error=False)
+            resolved = client.resolve_country_code(
+                user_sub=user_sub,
+                country_input=country_any.strip(),
+                trace_id=trace_id,
+                raise_on_error=False,
+            )
             if resolved:
-                return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
+                return {
+                    "guided_hospital_scope": _json_scope(
+                        "country_code", resolved, label=resolved
+                    )
+                }
 
-        hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
-        if isinstance(hospital_any, str) and hospital_any.strip() and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS:
-            page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-            providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
+        hospital_any = (
+            entities.get("hospital_name")
+            or entities.get("hospital")
+            or entities.get("provider")
+            or slot_value
+        )
+        if (
+            isinstance(hospital_any, str)
+            and hospital_any.strip()
+            and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS
+        ):
+            page = client.list_providers(
+                user_sub=user_sub,
+                limit=200,
+                offset=0,
+                trace_id=trace_id,
+                raise_on_error=False,
+            )
+            providers_any: Any = (
+                page.get("results", []) if isinstance(page, dict) else []
+            )
             providers_list: List[Dict[str, Any]] = []
             if isinstance(providers_any, list):
                 for provider_any in cast(List[Any], providers_any):
@@ -402,17 +510,40 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 provider_id = _extract_provider_id(provider)
                 label = _provider_name(provider)
                 if provider_id is not None:
-                    return {"guided_hospital_scope": _json_scope("provider_id", provider_id, label=label)}
-                return {"guided_hospital_scope": _json_scope("hospital_name", label or hospital_any.strip(), label=label or hospital_any.strip())}
+                    return {
+                        "guided_hospital_scope": _json_scope(
+                            "provider_id", provider_id, label=label
+                        )
+                    }
+                return {
+                    "guided_hospital_scope": _json_scope(
+                        "hospital_name",
+                        label or hospital_any.strip(),
+                        label=label or hospital_any.strip(),
+                    )
+                }
             if len(matches) > 1:
-                _utter_invalid(dispatcher, translate("action.guided.hospital_name_ambiguous", language=language))
+                _utter_invalid(
+                    dispatcher,
+                    translate(
+                        "action.guided.hospital_name_ambiguous", language=language
+                    ),
+                )
                 return {"guided_hospital_scope": None}
 
         group_any = entities.get("group_id") or entities.get("group") or slot_value
         if isinstance(group_any, int):
-            return {"guided_hospital_scope": _json_scope("group_id", group_any, label=str(group_any))}
+            return {
+                "guided_hospital_scope": _json_scope(
+                    "group_id", group_any, label=str(group_any)
+                )
+            }
         if isinstance(group_any, str) and group_any.strip().isdigit():
-            return {"guided_hospital_scope": _json_scope("group_id", int(group_any.strip()), label=group_any.strip())}
+            return {
+                "guided_hospital_scope": _json_scope(
+                    "group_id", int(group_any.strip()), label=group_any.strip()
+                )
+            }
 
         raw_source = scope_ref_any if scope_ref_any is not None else slot_value
         raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
@@ -421,15 +552,22 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 "guided_hospital_scope": _json_scope(
                     "all",
                     "all",
-                    label=translate("action.guided.all_hospitals_label", language=language),
+                    label=translate(
+                        "action.guided.all_hospitals_label", language=language
+                    ),
                 )
             }
 
-        _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
+        _utter_invalid(
+            dispatcher,
+            translate("action.guided.hospital_scope_invalid", language=language),
+        )
         return {"guided_hospital_scope": None}
 
 
-def parse_guided_scope(scope_raw: Any, trace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def parse_guided_scope(
+    scope_raw: Any, trace_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     if isinstance(scope_raw, dict):
         return cast(Dict[str, Any], scope_raw)
     if isinstance(scope_raw, str) and scope_raw.strip():
@@ -453,7 +591,9 @@ def parse_guided_scope(scope_raw: Any, trace_id: Optional[str] = None) -> Option
     return None
 
 
-def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id: str) -> Optional[Dict[str, Any]]:
+def resolve_scope_to_data_origin(
+    scope: Dict[str, Any], user_sub: str, trace_id: str
+) -> Optional[Dict[str, Any]]:
     scope_type = str(scope.get("scope_type") or "").strip().lower()
     value = scope.get("value")
     client = get_analytics_center_client()
@@ -512,7 +652,13 @@ def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id:
         return None
 
     if scope_type == "hospital_name" and isinstance(value, str) and value.strip():
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+        page = client.list_providers(
+            user_sub=user_sub,
+            limit=200,
+            offset=0,
+            trace_id=trace_id,
+            raise_on_error=False,
+        )
         providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
         providers_list: List[Dict[str, Any]] = []
         if isinstance(providers_any, list):
@@ -548,13 +694,17 @@ def _optional_slot_value(slots: Dict[str, Any], name: str) -> Optional[str]:
     return text
 
 
-def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[str] = None) -> S.AnalysisPlan:
+def build_guided_plan(
+    slots: Dict[str, Any], user_sub: str, trace_id: Optional[str] = None
+) -> S.AnalysisPlan:
     metric = str(slots.get("metric") or "").strip().upper()
     chart_type = (_optional_slot_value(slots, "chart_type") or "LINE").upper()
     group_by = _optional_slot_value(slots, "group_by")
     stroke_type = _optional_slot_value(slots, "stroke_type")
     sex = _optional_slot_value(slots, "sex")
-    guided_scope = parse_guided_scope(slots.get("guided_hospital_scope"), trace_id=trace_id)
+    guided_scope = parse_guided_scope(
+        slots.get("guided_hospital_scope"), trace_id=trace_id
+    )
 
     filters: List[S.FilterNode] = []
     if isinstance(stroke_type, str) and stroke_type.strip():
@@ -570,7 +720,15 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
 
     group_specs: List[S.GroupBySpec] = []
     if isinstance(group_by, str) and group_by.strip():
-        group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
+        group_by_field = group_by.strip().upper()
+        if group_by_field in {"SEX", "SEX_TYPE"}:
+            group_specs.append(S.GroupBySex(categories=None))
+        elif group_by_field == "STROKE_TYPE":
+            group_specs.append(S.GroupByStrokeType(categories=None))
+        elif group_by_field in {"DAY", "WEEK", "BIWEEK", "MONTH", "QUARTER", "YEAR"}:
+            group_specs.append(S.GroupByTime(grain=group_by_field))
+        else:
+            group_specs.append(S.GroupByCanonicalField(field=group_by_field))
 
     metric_origin_scope: Optional[S.OriginScopeSpec] = None
     if isinstance(guided_scope, dict) and guided_scope:
