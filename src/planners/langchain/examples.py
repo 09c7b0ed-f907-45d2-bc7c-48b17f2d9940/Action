@@ -425,6 +425,38 @@ def example_statistical_test_dtn_by_sex() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_filter_time_and_sex() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "group_by": ["QUARTER"],
+        "stroke_type": ["ISCHEMIC"],
+        "sex": ["MALE", "FEMALE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="TREND",
+                    measure="MEAN",
+                    time_grain="QUARTER",
+                    splits=[SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+                ),
+                filters=StrokeFilter(value="ISCHEMIC"),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nshow DTN per quarter for ischemic patients grouped by sex\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    return user, plan.model_dump_json(indent=2)
+
+
 def example_statistical_test_dtn_by_quarter() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["DTN"],
@@ -699,6 +731,35 @@ def example_dtn_ischemic_only_filter() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_group_by_stroke_type_bare() -> Tuple[str, str]:
+    detected_entities = {
+        "stroke_type": ["stroke type"],
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="STROKE_TYPE", categories=None)],
+                ),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line chart of DTN grouped by stroke type\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
     detected_entities = {"sex": ["FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
     plan = AnalysisPlan(
@@ -770,32 +831,64 @@ def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_grouped_by_sex_bare() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="SEX", categories=["MALE", "FEMALE"])],
+                ),
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                    )
+                ],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = f"USER_UTTERANCE:\nShow DTN grouped by sex\n\nENTITIES_DETECTED(JSON):\n{json.dumps(detected_entities)}"
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def get_few_shot_examples() -> List[Dict[str, str]]:
     examples: List[Dict[str, str]] = []
     for user, assistant in [
-        example_mw_my_hospital_vs_national(),
-        example_mw_hospital_vs_hospital(),
-        example_dtn_my_hospital_vs_country_average(),
-        example_dtn_my_hospital_vs_provider_group_name(),
+        example_dtn_by_sex(),
+        example_dtn_by_first_contact_place(),
+        example_dtn_line_basic(),
+        example_dtn_histogram_custom_buckets(),
+        example_dtn_males_only_filter(),
+        example_dtn_females_only_filter(),
+        example_dtn_by_sex_and_stroke(),
         example_one_graph_cross_split(),
         example_two_separate_charts(),
         example_dtn_last_6_months_by_sex(),
-        example_dtn_histogram_custom_buckets(),
-        example_dtn_line_basic(),
-        example_sex_distribution_bar(),
-        example_dtn_males_only_filter(),
-        example_dtn_females_only_filter(),
-        example_dtn_ischemic_only_filter(),
-        example_dtn_by_first_contact_place(),
-        example_dtn_by_sex(),
-        example_dtn_by_sex_and_stroke(),
-        example_dtn_by_age_10y_buckets(),
         example_statistical_test_dtn_by_sex(),
+        example_filter_time_and_sex(),
         example_statistical_test_dtn_by_quarter(),
+        example_dtn_my_hospital_vs_country_average(),
+        example_dtn_my_hospital_vs_provider_group_name(),
+        example_mw_my_hospital_vs_national(),
         example_dtn_year_filter(),
         example_dtn_quarterly(),
         example_dtn_monthly(),
+        example_dtn_ischemic_only_filter(),
+        example_group_by_stroke_type_bare(),
         example_dtn_ischemic_and_female_filter(),
+        example_mw_hospital_vs_hospital(),
+        example_dtn_grouped_by_sex_bare(),
+        example_sex_distribution_bar(),
+        example_dtn_by_age_10y_buckets(),
     ]:
         examples.append(
             {
