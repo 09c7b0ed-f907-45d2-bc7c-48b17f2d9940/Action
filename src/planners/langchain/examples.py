@@ -739,6 +739,30 @@ def example_dtn_monthly() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_yearly() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "time_grain": ["year"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="TREND", measure="MEAN", time_grain="YEAR"),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line chart of DTN per year\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_dtn_ischemic_only_filter() -> Tuple[str, str]:
     detected_entities = {
         "stroke_type": ["ISCHEMIC"],
@@ -915,6 +939,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_year_filter(),
         example_dtn_quarterly(),
         example_dtn_monthly(),
+        example_dtn_yearly(),
         example_dtn_ischemic_only_filter(),
         example_group_by_stroke_type_bare(),
         example_dtn_ischemic_and_female_filter(),

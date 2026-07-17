@@ -66,6 +66,61 @@ def test_compile_chart_grouping_quarter_grain_falls_back_to_default_bounds() -> 
     assert result.total_requests > 0
 
 
+def test_compile_chart_grouping_year_grain_falls_back_to_default_bounds() -> None:
+    """YEAR grain previously wasn't bucketable at all (no branch in
+    Dimension.categories() for it), so any yearly-trend chart hard-failed
+    regardless of whether a window was given."""
+    chart = S.ChartSpec(
+        chart_type="LINE",
+        metrics=[S.MetricSpec(metric="DTN")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(grain="YEAR"),
+        ),
+    )
+
+    result = compile_chart_grouping(chart)
+    assert result.total_requests > 0
+
+
+def test_compile_chart_grouping_year_grain_with_relative_window() -> None:
+    chart = S.ChartSpec(
+        chart_type="LINE",
+        metrics=[S.MetricSpec(metric="DTN")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(grain="YEAR", window=S.TimeWindow(last_n=3, unit="YEAR")),
+        ),
+    )
+
+    compiled = compile_chart_grouping(chart)
+    assert len(compiled.batches) == 1
+    assert len(compiled.batches[0].batched_time_periods) == 3
+
+
+def test_compile_chart_grouping_year_grain_with_explicit_range() -> None:
+    chart = S.ChartSpec(
+        chart_type="LINE",
+        metrics=[S.MetricSpec(metric="DTN")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEAN"),
+            time=S.TimeSemanticsSpec(
+                grain="YEAR",
+                window=S.TimeRange(start_date="2022-06-15", end_date="2025-01-10"),
+            ),
+        ),
+    )
+
+    compiled = compile_chart_grouping(chart)
+    assert len(compiled.batches) == 1
+    periods = compiled.batches[0].batched_time_periods
+    assert [p.start_date for p in periods] == ["2022-01-01", "2023-01-01", "2024-01-01", "2025-01-01"]
+    assert [p.end_date for p in periods] == ["2022-12-31", "2023-12-31", "2024-12-31", "2025-12-31"]
+
+
 def test_compile_chart_grouping_rejects_unsupported_custom_split() -> None:
     chart = S.ChartSpec(
         chart_type="LINE",

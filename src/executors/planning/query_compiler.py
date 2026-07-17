@@ -375,6 +375,40 @@ class Dimension:
                     y, q = _shift_quarter(y, q, 1)
                 return buckets
 
+            def _year_bucket(year: int) -> tuple[date, date]:
+                return date(year, 1, 1), date(year, 12, 31)
+
+            if isinstance(window, S.TimeWindow) and grain == "YEAR":
+                unit = str(window.unit).upper()
+                year_span = 0
+                if unit == "YEAR":
+                    year_span = window.last_n
+                elif unit == "QUARTER":
+                    year_span = max(1, window.last_n // 4)
+                elif unit == "MONTH":
+                    year_span = max(1, window.last_n // 12)
+
+                if year_span <= 0:
+                    return []
+
+                today = date.today()
+                buckets: list[tuple[date, date]] = []
+                for i in range(year_span):
+                    buckets.append(_year_bucket(today.year - i))
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "YEAR":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                buckets = [_year_bucket(y) for y in range(start.year, end.year + 1)]
+                return buckets
+
             return []
         if isinstance(self.spec, GroupByAge):
             return list(self.spec.buckets)
@@ -535,7 +569,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
         batched_time_spec = batched_time_dim.spec
         if isinstance(batched_time_spec, GroupByTime):
             grain = str(batched_time_spec.grain).upper()
-            if grain in ("MONTH", "QUARTER"):
+            if grain in ("MONTH", "QUARTER", "YEAR"):
                 default_start, default_end = default_time_bounds()
                 fallback_dim = Dimension(
                     GroupByTime(
