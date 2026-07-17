@@ -17,7 +17,9 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
     StrokeFilter,
+    TimeRange,
     TimeSemanticsSpec,
+    TimeWindow,
 )
 
 
@@ -28,12 +30,13 @@ def _semantics(
     measure: str,
     splits: List[SplitSpec] | None = None,
     time_grain: str | None = None,
+    time_window: TimeWindow | TimeRange | None = None,
 ) -> AnalysisSemanticsSpec:
     metric_code = metric.upper()
     intent_code = intent.upper()
     measure_code = measure.upper()
 
-    time = TimeSemanticsSpec(grain=time_grain.upper()) if time_grain else None
+    time = TimeSemanticsSpec(grain=time_grain.upper(), window=time_window) if time_grain else None
 
     if intent_code == "DISTRIBUTION":
         x_axis = AxisSemanticsSpec(role="METRIC_VALUE", metric=metric_code)
@@ -109,6 +112,36 @@ def example_dtn_by_age_10y_buckets() -> Tuple[str, str]:
     user = (
         "USER_UTTERANCE:\nShow me DTN grouped by age in 10-year buckets\n\nENTITIES_DETECTED(JSON):\n"
         + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_stroke_type_quarterly_past_2_years() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["STROKE_TYPE"],
+        "chart_type": ["BAR"],
+        "date": ["past 2 years"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                semantics=_semantics(
+                    metric="STROKE_TYPE",
+                    intent="DISTRIBUTION",
+                    measure="DISTRIBUTION",
+                    time_grain="QUARTER",
+                    time_window=TimeWindow(last_n=2, unit="YEAR"),
+                ),
+                metrics=[MetricSpec(metric="STROKE_TYPE")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nshow me a bar chart of stroke type quarterly over the past 2 years\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
     )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant

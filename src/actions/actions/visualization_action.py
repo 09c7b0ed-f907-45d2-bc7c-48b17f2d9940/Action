@@ -340,18 +340,25 @@ def _dedupe_list_values(values: List[Any]) -> List[Any]:
 
 
 _LATEST_ENTITY_PRECEDENCE_KEYS = {
-    "provider_id",
-    "provider_group_id",
-    "provider_name",
-    "provider_group_name",
+    "hospital_name",
+    "hospital_scope_reference",
     "country_code",
-    "country_average",
-    "scope",
-    "mine",
+    "group_id",
     "date",
-    "time",
-    "time_scope",
-    "statistical_test_type",
+}
+
+# Subset of _LATEST_ENTITY_PRECEDENCE_KEYS that identify *this specific request's*
+# comparison target rather than sticky session state (e.g. a date range, which
+# should keep applying to follow-up turns that don't restate it). If the latest
+# turn doesn't mention one of these, any value inherited from earlier turns in the
+# thread must be dropped rather than silently carried forward -- otherwise a
+# hospital named in an earlier Mann-Whitney comparison leaks into an unrelated
+# follow-up chart request that names no hospital at all.
+_LATEST_ENTITY_CLEAR_ON_ABSENCE_KEYS = {
+    "hospital_name",
+    "hospital_scope_reference",
+    "country_code",
+    "group_id",
 }
 
 
@@ -369,10 +376,14 @@ def merge_latest_with_thread_entities(
         if isinstance(value, list):
             merged[key] = _dedupe_list_values(cast(List[Any], value))
 
-    # For cohort/statistical keys, the latest user turn must be authoritative.
+    # For cohort/statistical keys, the latest user turn must be authoritative: it
+    # overrides an inherited thread value outright, and for scope-identity keys
+    # (not sticky filters like date) its absence clears any inherited value too.
     for key in _LATEST_ENTITY_PRECEDENCE_KEYS:
         if key in latest_entities:
             merged[key] = latest_entities[key]
+        elif key in _LATEST_ENTITY_CLEAR_ON_ABSENCE_KEYS:
+            merged.pop(key, None)
     return merged
 
 

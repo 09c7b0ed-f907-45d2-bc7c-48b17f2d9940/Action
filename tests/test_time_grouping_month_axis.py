@@ -111,7 +111,7 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
 
         self.assertIn("missing d1", str(err.exception))
 
-    def test_compile_chart_grouping_month_and_sex_requires_explicit_temporal_bounds(self) -> None:
+    def test_compile_chart_grouping_month_and_sex_falls_back_to_default_temporal_bounds(self) -> None:
         chart = S.ChartSpec(
             chart_type="LINE",
             metrics=[S.MetricSpec(metric="DTN")],
@@ -123,9 +123,8 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
             ),
         )
 
-        with self.assertRaises(ValueError) as ctx:
-            compile_chart_grouping(chart)
-        self.assertIn("explicit time window/range", str(ctx.exception))
+        result = compile_chart_grouping(chart)
+        self.assertGreater(result.total_requests, 0)
 
     def test_map_metrics_payload_to_series_raises_on_non_numeric_grouped_case_count(self) -> None:
         kpi = SimpleNamespace(

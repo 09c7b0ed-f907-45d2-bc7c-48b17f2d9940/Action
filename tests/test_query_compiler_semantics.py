@@ -30,7 +30,10 @@ def test_compile_chart_grouping_prefers_semantics_splits_and_time() -> None:
     assert len(batch.combos_list) == 2
 
 
-def test_compile_chart_grouping_rejects_time_grain_without_explicit_bounds() -> None:
+def test_compile_chart_grouping_falls_back_to_default_bounds_without_explicit_time_range() -> None:
+    """Charts and statistical tests must behave the same when no explicit time
+    window/range is given: fall back to default_time_bounds() rather than
+    hard-failing and forcing the user to restate an explicit range."""
     chart = S.ChartSpec(
         chart_type="LINE",
         metrics=[S.MetricSpec(metric="DTN")],
@@ -41,11 +44,26 @@ def test_compile_chart_grouping_rejects_time_grain_without_explicit_bounds() -> 
         ),
     )
 
-    try:
-        compile_chart_grouping(chart)
-        assert False, "Expected ValueError when semantic time grain lacks explicit bounds"
-    except ValueError as exc:
-        assert "explicit time window/range" in str(exc)
+    result = compile_chart_grouping(chart)
+    assert result.total_requests > 0
+
+
+def test_compile_chart_grouping_quarter_grain_falls_back_to_default_bounds() -> None:
+    """Regression test for a reported bug: 'quarterly over the past 2 years' with
+    no window populated must not hard-fail asking for an explicit range -- QUARTER
+    grain needs the same default-bounds fallback MONTH grain already has."""
+    chart = S.ChartSpec(
+        chart_type="BAR",
+        metrics=[S.MetricSpec(metric="STROKE_TYPE")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="DISTRIBUTION",
+            measure=S.MeasureSemanticsSpec(type="DISTRIBUTION"),
+            time=S.TimeSemanticsSpec(grain="QUARTER"),
+        ),
+    )
+
+    result = compile_chart_grouping(chart)
+    assert result.total_requests > 0
 
 
 def test_compile_chart_grouping_rejects_unsupported_custom_split() -> None:

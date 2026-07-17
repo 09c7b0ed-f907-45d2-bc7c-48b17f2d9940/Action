@@ -13,6 +13,7 @@ from src.domain.graphql.request import (
     SexFilter,
     StrokeFilter,
     TimePeriod,
+    default_time_bounds,
 )
 from src.domain.graphql.ssot_enums import GroupByType, Operator, SexType, StrokeType
 from src.domain.langchain import schema as S
@@ -525,6 +526,30 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
             if grain == "MONTH":
                 bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
                 batched_time_periods = _build_month_periods_from_bounds(bound_start, bound_end)
+
+    # Charts and statistical tests must behave the same when no explicit time
+    # window/range was given: fall back to the same default bounds
+    # (default_time_bounds) rather than hard-failing and asking the user to
+    # restate an explicit range.
+    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+        batched_time_spec = batched_time_dim.spec
+        if isinstance(batched_time_spec, GroupByTime):
+            grain = str(batched_time_spec.grain).upper()
+            if grain in ("MONTH", "QUARTER"):
+                default_start, default_end = default_time_bounds()
+                fallback_dim = Dimension(
+                    GroupByTime(
+                        grain=grain,
+                        window=S.TimeRange(start_date=default_start, end_date=default_end),
+                        include_partial=batched_time_spec.include_partial,
+                    )
+                )
+                for cat in fallback_dim.categories():
+                    try:
+                        start, end = cat
+                        batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
+                    except Exception:
+                        raise ValueError("Semantic time grouping produced an invalid batched time period")
 
     if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
         batched_time_spec = batched_time_dim.spec
