@@ -1,7 +1,7 @@
 import ast
 import json
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 
 
 def _load_merge_latest_with_thread_entities():
@@ -33,6 +33,10 @@ def _load_merge_latest_with_thread_entities():
     namespace = {
         "json": json,
         "cast": cast,
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "Optional": Optional,
         "_VISUALIZATION_THREAD_INTENTS": {
             "generate_visualization",
             "update_visualization",
@@ -40,6 +44,20 @@ def _load_merge_latest_with_thread_entities():
         },
         "_VISUALIZATION_PLAN_TYPE": "visualization_plan",
         "_VISUALIZATION_RESPONSE_SCHEMA_VERSION": 1,
+        "_LATEST_ENTITY_PRECEDENCE_KEYS": {
+            "provider_id",
+            "provider_group_id",
+            "provider_name",
+            "provider_group_name",
+            "country_code",
+            "country_average",
+            "scope",
+            "mine",
+            "date",
+            "time",
+            "time_scope",
+            "statistical_test_type",
+        },
     }
     exec(compile(isolated_module, filename=str(source_path), mode="exec"), namespace)
     return namespace["merge_latest_with_thread_entities"]
