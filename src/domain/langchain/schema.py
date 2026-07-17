@@ -595,6 +595,10 @@ class SplitSpec(BaseModel):
     kind: str
     field: Optional[str] = None
     categories: Optional[List[str]] = None
+    buckets: Optional[List[Bucket]] = Field(
+        default=None,
+        description="Explicit numeric buckets for AGE/NIHSS splits, e.g. [{min:0,max:10}, {min:10,max:20}].",
+    )
 
     @field_validator("kind")
     def validate_kind(cls, v: str) -> str:
@@ -611,6 +615,15 @@ class SplitSpec(BaseModel):
             self.field = self.field.strip().upper()
         elif self.field is not None and not self.field.strip():
             self.field = None
+
+        if self.kind in {"AGE", "NIHSS"}:
+            if not self.buckets:
+                raise ValueError(f"split.buckets is required when split.kind is {self.kind}")
+            for bucket in self.buckets:
+                if bucket.min >= bucket.max:
+                    raise ValueError("Each split.buckets entry requires min < max.")
+        elif self.buckets is not None and not self.buckets:
+            self.buckets = None
         return self
 
 

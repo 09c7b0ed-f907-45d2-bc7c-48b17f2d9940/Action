@@ -63,7 +63,8 @@ _ENTITY_SSOT_RESOLVERS = {
 }
 
 
-def normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+    # Deterministic SSOT canonicalization only (no fallback inference).
     normalized: Dict[str, Any] = {}
     for key, value in entities.items():
         resolver = _ENTITY_SSOT_RESOLVERS.get(key)
@@ -461,9 +462,66 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
     def _metric_preview(metric_any: Any) -> Dict[str, Any]:
         metric = _mapping_to_dict(metric_any)
         metric_code = metric.get("metric")
-        if isinstance(metric_code, str) and metric_code.strip():
-            return {"metric": metric_code.strip().upper()}
-        return {}
+        if not (isinstance(metric_code, str) and metric_code.strip()):
+            return {}
+
+        out: Dict[str, Any] = {"metric": metric_code.strip().upper()}
+
+        data_origin = _mapping_to_dict(metric.get("data_origin"))
+        if not data_origin:
+            data_origin = _mapping_to_dict(metric.get("dataOrigin"))
+        if data_origin:
+            data_origin_out: Dict[str, Any] = {}
+            provider_ids_any = data_origin.get("provider_id")
+            if isinstance(provider_ids_any, list):
+                provider_ids = []
+                for raw in cast(List[Any], provider_ids_any):
+                    if isinstance(raw, int) and raw > 0:
+                        provider_ids.append(raw)
+                if provider_ids:
+                    data_origin_out["provider_id"] = provider_ids
+
+            provider_group_ids_any = data_origin.get("provider_group_id")
+            if isinstance(provider_group_ids_any, list):
+                provider_group_ids = []
+                for raw in cast(List[Any], provider_group_ids_any):
+                    if isinstance(raw, int) and raw > 0:
+                        provider_group_ids.append(raw)
+                if provider_group_ids:
+                    data_origin_out["provider_group_id"] = provider_group_ids
+
+            if data_origin_out:
+                out["data_origin"] = data_origin_out
+
+        origin_scope = _mapping_to_dict(metric.get("origin_scope"))
+        if not origin_scope:
+            origin_scope = _mapping_to_dict(metric.get("originScope"))
+        if origin_scope:
+            origin_scope_out: Dict[str, Any] = {}
+            scope_type = origin_scope.get("scope_type")
+            if not isinstance(scope_type, str) or not scope_type.strip():
+                scope_type = origin_scope.get("scopeType")
+            if isinstance(scope_type, str) and scope_type.strip():
+                origin_scope_out["scope_type"] = scope_type.strip().upper()
+
+            label = origin_scope.get("label")
+            if isinstance(label, str) and label.strip():
+                origin_scope_out["label"] = label.strip()
+
+            value = origin_scope.get("value")
+            if isinstance(value, (str, int, float)) and value != "":
+                origin_scope_out["value"] = value
+
+            country_code = origin_scope.get("country_code")
+            if not isinstance(country_code, str) or not country_code.strip():
+                country_code = origin_scope.get("countryCode")
+            if isinstance(country_code, str) and country_code.strip():
+                origin_scope_out["country_code"] = country_code.strip().upper()
+
+            if origin_scope_out:
+                out["origin_scope"] = origin_scope_out
+
+        return out
 
     def _split_preview(split_any: Any) -> Dict[str, Any]:
         split = _mapping_to_dict(split_any)
@@ -480,6 +538,62 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
                     categories.append(raw.strip().upper())
             if categories:
                 out["categories"] = categories
+        return out
+
+    def _filter_preview(filter_any: Any) -> Dict[str, Any]:
+        filter_node = _mapping_to_dict(filter_any)
+        if not filter_node:
+            return {}
+
+        filter_type = filter_node.get("type")
+        if not isinstance(filter_type, str) or not filter_type.strip():
+            return {}
+
+        filter_type_norm = filter_type.strip().upper()
+        out: Dict[str, Any] = {"type": filter_type_norm}
+
+        operator = filter_node.get("operator")
+        if isinstance(operator, str) and operator.strip():
+            out["operator"] = operator.strip().upper()
+
+        value = filter_node.get("value")
+        if isinstance(value, (str, int, float, bool)):
+            out["value"] = value
+
+        if filter_type_norm == "ANDFILTER":
+            clauses_any = filter_node.get("and_")
+            if not isinstance(clauses_any, list):
+                clauses_any = filter_node.get("and")
+            if isinstance(clauses_any, list):
+                clauses: List[Dict[str, Any]] = []
+                for item in cast(List[Any], clauses_any):
+                    preview = _filter_preview(item)
+                    if preview:
+                        clauses.append(preview)
+                if clauses:
+                    out["and"] = clauses
+
+        elif filter_type_norm == "ORFILTER":
+            clauses_any = filter_node.get("or_")
+            if not isinstance(clauses_any, list):
+                clauses_any = filter_node.get("or")
+            if isinstance(clauses_any, list):
+                clauses: List[Dict[str, Any]] = []
+                for item in cast(List[Any], clauses_any):
+                    preview = _filter_preview(item)
+                    if preview:
+                        clauses.append(preview)
+                if clauses:
+                    out["or"] = clauses
+
+        elif filter_type_norm == "NOTFILTER":
+            clause_any = filter_node.get("not_")
+            if clause_any is None:
+                clause_any = filter_node.get("not")
+            preview = _filter_preview(clause_any)
+            if preview:
+                out["not"] = preview
+
         return out
 
     def _chart_preview(chart_any: Any) -> Dict[str, Any]:
@@ -559,6 +673,11 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
                     group_by.append(preview)
             if group_by:
                 out["group_by"] = group_by
+
+        filters_any = test.get("filters")
+        filter_preview = _filter_preview(filters_any)
+        if filter_preview:
+            out["filters"] = filter_preview
 
         return out
 

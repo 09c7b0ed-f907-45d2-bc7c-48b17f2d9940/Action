@@ -6,6 +6,33 @@ from src.executors.planning import origin_scope_resolver
 
 
 class OriginScopeResolverSemanticsTests(unittest.TestCase):
+    def test_list_accessible_providers_does_not_apply_user_filter(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def list_providers(self, **kwargs):
+                calls.append(kwargs)
+                return {
+                    "results": [
+                        {
+                            "id": 1853,
+                            "nameEnglish": "Army Alhama de Murcia Hospital",
+                        }
+                    ],
+                    "count": 1,
+                }
+
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
+            providers = origin_scope_resolver._list_accessible_providers(
+                user_sub="0a709c3b-2c71-4c5b-85d6-66454da5c9d7:thread:4",
+                trace_id="trace-1",
+            )
+
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0]["id"], 1853)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("user", calls[0])
+
     def test_resolve_plan_metric_origins_preserves_chart_semantics(self) -> None:
         plan = S.AnalysisPlan(
             charts=[
@@ -36,6 +63,33 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
         self.assertEqual(resolved_chart.semantics.measure.type, "MEAN")
         self.assertIsNotNone(resolved_chart.semantics.time)
         self.assertEqual(resolved_chart.semantics.time.grain, "MONTH")
+
+    def test_search_accessible_providers_by_name_stops_after_exact_match(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def list_providers(self, **kwargs):
+                calls.append(kwargs)
+                return {
+                    "results": [
+                        {
+                            "id": 1853,
+                            "nameEnglish": "Army Alhama de Murcia Hospital",
+                        }
+                    ],
+                    "count": 1,
+                }
+
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
+            providers = origin_scope_resolver._search_accessible_providers_by_name(
+                requested_names=["Army Alhama de Murcia Hospital"],
+                user_sub="user-1",
+                trace_id="trace-2",
+            )
+
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0]["id"], 1853)
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

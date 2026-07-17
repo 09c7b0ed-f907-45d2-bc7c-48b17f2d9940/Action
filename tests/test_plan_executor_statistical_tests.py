@@ -310,6 +310,75 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
 
         self.assertEqual(results, expected)
 
+    def test_validate_statistical_tests_readiness_allows_temporal_pair(self) -> None:
+        test_a = StatisticalTestSpec(
+            test_type="MANN_WHITNEY_U_TEST",
+            metrics=[
+                MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[279])),
+                MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[279])),
+            ],
+            filters=AndFilter(
+                and_=[
+                    DateFilter(operator="GE", value="2025-10-01"),
+                    DateFilter(operator="LE", value="2025-12-31"),
+                ]
+            ),
+        )
+        test_b = StatisticalTestSpec(
+            test_type="MANN_WHITNEY_U_TEST",
+            metrics=[
+                MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[279])),
+                MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[279])),
+            ],
+            filters=AndFilter(
+                and_=[
+                    DateFilter(operator="GE", value="2026-01-01"),
+                    DateFilter(operator="LE", value="2026-03-31"),
+                ]
+            ),
+        )
+        plan = AnalysisPlan(statistical_tests=[test_a, test_b])
+
+        plan_executor._validate_statistical_tests_readiness(plan, trace_id="trace-1")
+
+    def test_validate_statistical_tests_readiness_terminates_for_single_valid_test(self) -> None:
+        # Regression test: a single valid two-cohort Mann-Whitney test must not hang.
+        # The readiness loop previously never advanced its index on this path, spinning
+        # forever instead of returning. Bound execution in a thread so a regression
+        # fails the test instead of hanging the whole suite.
+        import threading
+
+        test = StatisticalTestSpec(
+            test_type="MANN_WHITNEY_U_TEST",
+            metrics=[
+                MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[279])),
+                MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[1853])),
+            ],
+            filters=AndFilter(
+                and_=[
+                    DateFilter(operator="GE", value="2025-01-01"),
+                    DateFilter(operator="LE", value="2025-12-31"),
+                ]
+            ),
+        )
+        plan = AnalysisPlan(statistical_tests=[test])
+
+        outcome: dict = {}
+
+        def _run() -> None:
+            try:
+                plan_executor._validate_statistical_tests_readiness(plan, trace_id="trace-1")
+                outcome["completed"] = True
+            except Exception as exc:  # pragma: no cover - would indicate a different bug
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive(), "readiness validation hung on a single valid test")
+        self.assertTrue(outcome.get("completed"), outcome.get("error"))
+
     def test_mann_whitney_fails_for_unauthorized_cohorts(self) -> None:
         test = StatisticalTestSpec(
             test_type="MANN_WHITNEY_U_TEST",

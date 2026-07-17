@@ -13,7 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
-from src.planners.langchain.pipeline import generate_analysis_plan
+from src.planners.langchain.pipeline import _PLANNER_REQUEST_TIMEOUT_SECONDS, generate_analysis_plan
 from src.shared import ssot_loader
 from src.util import env as env_util
 from src.util.logging_utils import bind_current_context, log_context
@@ -43,6 +43,17 @@ try:
 except Exception:
     _orchestrator_timeout_value = 10.0
 _ORCHESTRATOR_TIMEOUT_SECONDS = _orchestrator_timeout_value
+
+# Plan generation involves a reasoning step and can legitimately take longer than the
+# fast triage/decision call above. Its outer timeout must never be tighter than
+# pipeline.py's own per-attempt budget, or correct-but-slightly-slow plans get killed
+# before generate_analysis_plan ever has a chance to return them.
+_PLAN_GENERATION_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_PLAN_GENERATION_TIMEOUT_SECONDS", default="") or ""
+try:
+    _plan_generation_timeout_value = max(1.0, float(_PLAN_GENERATION_TIMEOUT_RAW))
+except Exception:
+    _plan_generation_timeout_value = max(_ORCHESTRATOR_TIMEOUT_SECONDS, _PLANNER_REQUEST_TIMEOUT_SECONDS + 10.0)
+_PLAN_GENERATION_TIMEOUT_SECONDS = _plan_generation_timeout_value
 
 _ORCHESTRATOR_TEMPERATURE_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TEMPERATURE", default="0") or "0"
 _orchestrator_temperature_value = 0.0
@@ -83,6 +94,9 @@ _STATISTICAL_COHORT_ENTITY_KEYS = {
     "provider_group_id",
     "provider_name",
     "provider_group_name",
+    "hospital_name",
+    "hospital_scope_reference",
+    "scope",
     "country_code",
     "country_average",
     "sex",
@@ -135,6 +149,7 @@ Rules:
 - For statistical-test-only requests, required fields are metric and statistical_test_type; chart_type is optional and should not trigger clarification.
 - If required fields for the detected intent are present, return decision="proceed" and message=null.
 - If one required field is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
+- Never reject a metric because you judge it numeric-incompatible with the requested chart_type (e.g. a categorical/Enum metric like sex or stroke_type charted as a bar/pie/line). Any metric present in ENTITIES_JSON or VALID_METRIC_CANDIDATES_JSON is a valid metric for any chart_type at this stage — chart/metric compatibility is decided by the planning stage, not triage.
 - If out of scope, return decision="reject" with a short message.
 - Never ask the user to clarify or provide time_scope, time_range, grouping_dimension, sex, or stroke_type — these are optional and should be accepted if present, not rejected.
 - Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
@@ -229,6 +244,40 @@ def _invoke_chain(chain: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
             raise TimeoutError(f"Orchestrator timed out after {_ORCHESTRATOR_TIMEOUT_SECONDS:.1f}s") from exc
 
     return _extract_json_object(_extract_text(response))
+
+
+def _generate_plan_with_timeout(
+    question: str,
+    entities: Dict[str, Any],
+    language: Optional[str] = None,
+    max_retries: int = 2,
+    trace_id: Optional[str] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> AnalysisPlan:
+    """Wrap generate_analysis_plan with timeout protection to prevent indefinite hangs."""
+    def _call_plan_gen() -> AnalysisPlan:
+        result = generate_analysis_plan(
+            question=question,
+            entities=entities,
+            language=language,
+            max_retries=max_retries,
+            debug=False,
+            trace_id=trace_id,
+            progress_cb=progress_cb,
+        )
+        if not isinstance(result, AnalysisPlan):
+            raise RuntimeError(f"Expected AnalysisPlan but got {type(result).__name__}")
+        return cast(AnalysisPlan, result)
+    
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_call_plan_gen)
+        try:
+            return future.result(timeout=_PLAN_GENERATION_TIMEOUT_SECONDS)
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(
+                f"Plan generation timed out after {_PLAN_GENERATION_TIMEOUT_SECONDS:.1f}s for question: {question[:50]}"
+            ) from exc
 
 
 def _metric_candidates(question: str, limit: int = 8) -> List[str]:
@@ -398,6 +447,98 @@ def _extract_statistical_cohort_tokens(entities: Dict[str, Any]) -> List[str]:
     return normalized
 
 
+def _extract_quarter_tokens(entities: Dict[str, Any]) -> List[str]:
+    tokens: List[str] = []
+    for raw in _extract_string_list(entities.get("quarter")) + _extract_string_list(entities.get("date")):
+        token = raw.strip().upper().replace("_", " ")
+        token = re.sub(r"\s+", " ", token)
+        if re.match(r"^Q[1-4](?:\s+\d{4})?$", token):
+            tokens.append(token)
+
+    unique: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        marker = token.lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(token)
+    return unique
+
+
+def _extract_iso_day_tokens(entities: Dict[str, Any]) -> List[str]:
+    tokens: List[str] = []
+    for raw in _extract_string_list(entities.get("date")):
+        token = raw.strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", token):
+            tokens.append(token)
+
+    unique: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        marker = token.lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(token)
+    return unique
+
+
+def _extract_period_tokens(entities: Dict[str, Any]) -> List[str]:
+    tokens: List[str] = []
+    month_names = (
+        "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+        "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+        "JAN", "FEB", "MAR", "APR", "JUN", "JUL", "AUG", "SEP", "SEPT", "OCT", "NOV", "DEC",
+    )
+    month_pattern = "(?:" + "|".join(month_names) + ")"
+
+    for raw in _extract_string_list(entities.get("date")):
+        token = raw.strip().upper().replace("_", " ")
+        token = re.sub(r"\s+", " ", token)
+        if not token:
+            continue
+        if re.match(r"^\d{4}$", token):
+            tokens.append(token)
+            continue
+        if re.match(r"^\d{4}-\d{2}$", token):
+            tokens.append(token)
+            continue
+        if re.match(rf"^{month_pattern}\s+\d{{4}}$", token):
+            tokens.append(token)
+            continue
+        if token in {
+            "THIS YEAR", "LAST YEAR", "PREVIOUS YEAR",
+            "THIS QUARTER", "LAST QUARTER", "PREVIOUS QUARTER",
+            "THIS MONTH", "LAST MONTH", "PREVIOUS MONTH",
+        }:
+            tokens.append(token)
+
+    unique: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        marker = token.lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(token)
+    return unique
+
+
+def _has_explicit_temporal_comparison(entities: Dict[str, Any]) -> bool:
+    if len(_extract_quarter_tokens(entities)) >= 2:
+        return True
+
+    if len(_extract_period_tokens(entities)) >= 2:
+        return True
+
+    # Two temporal cohorts may come as two explicit date ranges with four bounds.
+    if len(_extract_iso_day_tokens(entities)) >= 4:
+        return True
+
+    return False
+
+
 def _question_mentions_provider_group(question: str) -> bool:
     low = (question or "").strip().lower()
     if not low:
@@ -450,6 +591,9 @@ def _validate_statistical_entity_readiness(question: str, entities: Dict[str, An
         )
 
     cohort_tokens = _extract_statistical_cohort_tokens(entities)
+    if _has_explicit_temporal_comparison(entities):
+        return None
+
     if len(cohort_tokens) < 2:
         return VisualizationRequestOutcome(
             decision="clarify",
@@ -482,6 +626,18 @@ def _extract_semantic_scopes(entities: Dict[str, Any]) -> List[OriginScopeSpec]:
 
     if entities.get("mine"):
         scopes.append(_coerce_origin_scope("mine", label="mine"))
+
+    scope_refs = _extract_string_list(entities.get("hospital_scope_reference")) + _extract_string_list(entities.get("scope"))
+    for scope_ref in scope_refs:
+        normalized = scope_ref.strip().lower()
+        if normalized in {"mine", "my hospital", "our hospital", "ours"}:
+            scopes.append(_coerce_origin_scope("mine", label="mine"))
+        elif normalized in {"all", "all hospitals", "all accessible"}:
+            scopes.append(_coerce_origin_scope("all_accessible", label="all accessible"))
+
+    hospital_names = _extract_string_list(entities.get("hospital_name"))
+    for hospital_name in hospital_names:
+        scopes.append(_coerce_origin_scope("provider_name", value=hospital_name, label=hospital_name))
 
     provider_names = _extract_string_list(entities.get("provider_name"))
     for provider_name in provider_names:
@@ -613,16 +769,35 @@ def _has_distinct_metric_cohorts(metric_a: Optional[Any], metric_b: Optional[Any
 
 
 def _validate_statistical_plan_readiness(plan: AnalysisPlan) -> Optional[VisualizationRequestOutcome]:
+    logger.info("Entering _validate_statistical_plan_readiness")
     tests = list(plan.statistical_tests or [])
+    logger.info("Statistical readiness received %d test(s)", len(tests))
     if not tests:
         return None
 
-    for test in tests:
+    index = 0
+    while index < len(tests):
+        test = tests[index]
         test_type = (test.test_type or "").upper().strip()
+        logger.info("Validating test index=%d type=%s", index, test_type)
         if test_type != "MANN_WHITNEY_U_TEST":
+            index += 1
             continue
 
+        # Temporal comparisons are represented as two adjacent Mann-Whitney tests
+        # with matching metrics and distinct date filters.
+        if index + 1 < len(tests):
+            next_test = tests[index + 1]
+            next_type = (next_test.test_type or "").upper().strip()
+            if next_type == "MANN_WHITNEY_U_TEST":
+                metrics = [m.metric.strip().upper() for m in (test.metrics or []) if m.metric and m.metric.strip()]
+                next_metrics = [m.metric.strip().upper() for m in (next_test.metrics or []) if m.metric and m.metric.strip()]
+                if test.filters is not None and next_test.filters is not None and metrics and metrics == next_metrics:
+                    index += 2
+                    continue
+
         metrics = list(test.metrics or [])
+        logger.info("Mann-Whitney test index=%d has %d metric cohort(s)", index, len(metrics))
         if len(metrics) < 2:
             return VisualizationRequestOutcome(
                 decision="clarify",
@@ -636,6 +811,7 @@ def _validate_statistical_plan_readiness(plan: AnalysisPlan) -> Optional[Visuali
                 missing_fields=["statistical_cohorts"],
             )
 
+        logger.info("Checking cohort distinctness for Mann-Whitney test index=%d", index)
         if not _has_distinct_metric_cohorts(metrics[0], metrics[1]):
             return VisualizationRequestOutcome(
                 decision="clarify",
@@ -648,6 +824,8 @@ def _validate_statistical_plan_readiness(plan: AnalysisPlan) -> Optional[Visuali
                 clarification_options=[],
                 missing_fields=["statistical_cohorts"],
             )
+
+        index += 1
 
     return None
 
@@ -726,12 +904,11 @@ def orchestrate_visualization_request(
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
                 return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
-            plan = generate_analysis_plan(
+            plan = _generate_plan_with_timeout(
                 question=question,
                 entities=entities,
                 language=language,
                 max_retries=max_retries,
-                debug=False,
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
@@ -776,14 +953,12 @@ def orchestrate_visualization_request(
                 )
 
             report("Generating visualization plan")
-            planner_question = question
-            if conversation_history:
-                cleaned_history = [item.strip() for item in conversation_history if item.strip()]
-                if cleaned_history:
-                    joined = "\n".join(f"- {item}" for item in cleaned_history)
-                    planner_question = f"Conversation context (oldest to newest user turns):\n{joined}\n\nCurrent request to fulfill:\n{question}"
-
-            deterministic_plan = _build_deterministic_statistical_plan(planner_question, entities)
+            # `question` is already the correctly-scoped current-turn text (callers
+            # prefix it with the prior plan JSON for update flows); no need to
+            # re-join conversation_history here too — that previously duplicated
+            # history the caller already folded in, and could feed stale keywords
+            # from unrelated prior turns into the provider/provider-group checks.
+            deterministic_plan = _build_deterministic_statistical_plan(question, entities)
             if deterministic_plan is not None:
                 stats_validation = _validate_statistical_plan_readiness(deterministic_plan)
                 if stats_validation is not None:
@@ -794,25 +969,33 @@ def orchestrate_visualization_request(
                     plan=deterministic_plan,
                 )
 
-            plan = generate_analysis_plan(
-                question=planner_question,
+            logger.info("Plan generation starting via timeout wrapper")
+            plan = _generate_plan_with_timeout(
+                question=question,
                 entities=entities,
                 language=language,
                 max_retries=max_retries,
-                debug=False,
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
+            logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
+            logger.info("Starting validation of statistical plan readiness")
             stats_validation = _validate_statistical_plan_readiness(plan)
+            logger.info("Statistical validation complete", extra={"validation_result": stats_validation is not None})
+            
             if stats_validation is not None:
+                logger.info("Returning statistical validation result")
                 return stats_validation
 
-            return VisualizationRequestOutcome(
+            logger.info("Creating and returning VisualizationRequestOutcome")
+            outcome = VisualizationRequestOutcome(
                 decision="proceed",
                 reason=stage1.reason or "sufficient_information",
                 plan=plan,
             )
+            logger.info("VisualizationRequestOutcome created", extra={"outcome": str(outcome)[:100]})
+            return outcome
         except Exception:
             logger.exception(
                 "Visualization request orchestration failed",
@@ -826,32 +1009,31 @@ def orchestrate_visualization_request(
                     }
                 },
             )
-            if _ORCHESTRATOR_FAIL_OPEN and include_plan:
-                logger.warning(
-                    "Orchestrator failed; activating direct-plan fallback",
-                    extra={
-                        "log_context": {
-                            "event": "orchestrator.request.fail_open_fallback",
-                            "operation": "orchestrate_visualization_request",
-                            "outcome": "degraded",
-                        }
-                    },
-                )
-                report("Orchestration fallback: generating plan directly")
-                plan = generate_analysis_plan(
-                    question=question,
-                    entities=entities,
-                    language=language,
-                    max_retries=max_retries,
-                    debug=False,
-                    trace_id=trace_id,
-                    progress_cb=progress_cb,
-                )
-                return VisualizationRequestOutcome(
-                    decision="proceed",
-                    reason="orchestrator_fallback_to_plan",
-                    plan=plan,
-                )
+            # Orchestration failed (LLM error, timeout, parsing failure, ...). Retry plan
+            # generation once, skipping the normal triage/readiness checks, when either
+            # the fail-open escape hatch is enabled (a broad opt-in for degraded-mode
+            # operation) or the request clearly looks like a statistical test (a
+            # narrower, always-on resilience case). Either way, a second failure falls
+            # through to the same explicit clarify outcome rather than propagating.
+            should_retry = include_plan and (_ORCHESTRATOR_FAIL_OPEN or _has_statistical_test_signal(question, entities))
+            if should_retry:
+                try:
+                    report("Orchestration failed; retrying plan generation directly")
+                    plan = _generate_plan_with_timeout(
+                        question=question,
+                        entities=entities,
+                        language=language,
+                        max_retries=max_retries,
+                        trace_id=trace_id,
+                        progress_cb=progress_cb,
+                    )
+                    return VisualizationRequestOutcome(
+                        decision="proceed",
+                        reason="orchestrator_fallback_to_plan",
+                        plan=plan,
+                    )
+                except Exception:
+                    logger.exception("Fallback plan generation failed", extra={"trace_id": trace_id})
 
             return VisualizationRequestOutcome(
                 decision="clarify",

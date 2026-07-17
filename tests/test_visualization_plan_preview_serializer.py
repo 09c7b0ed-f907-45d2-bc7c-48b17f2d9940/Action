@@ -143,6 +143,93 @@ class VisualizationPlanPreviewSerializerTests(unittest.TestCase):
             [{"kind": "SEX", "categories": ["MALE", "FEMALE"]}],
         )
 
+    def test_serialize_plan_for_frontend_keeps_statistical_test_cohort_origin(self) -> None:
+        serialize_plan_for_frontend = _load_serialize_plan_for_frontend()
+
+        plan: Dict[str, Any] = {
+            "statistical_tests": [
+                {
+                    "test_type": "MANN_WHITNEY_U_TEST",
+                    "metrics": [
+                        {
+                            "metric": "DTN",
+                            "originScope": {
+                                "scopeType": "provider_name",
+                                "label": "My hospital",
+                                "value": "my",
+                            },
+                        },
+                        {
+                            "metric": "DTN",
+                            "originScope": {
+                                "scopeType": "provider_name",
+                                "label": "Army Alhama de Murcia Hospital",
+                                "value": "Army Alhama de Murcia Hospital",
+                            },
+                        },
+                    ],
+                }
+            ]
+        }
+
+        payload = serialize_plan_for_frontend(plan)
+
+        tests = cast(List[Dict[str, Any]], payload["statistical_tests"])
+        self.assertEqual(
+            tests[0]["metrics"],
+            [
+                {
+                    "metric": "DTN",
+                    "origin_scope": {
+                        "scope_type": "PROVIDER_NAME",
+                        "label": "My hospital",
+                        "value": "my",
+                    },
+                },
+                {
+                    "metric": "DTN",
+                    "origin_scope": {
+                        "scope_type": "PROVIDER_NAME",
+                        "label": "Army Alhama de Murcia Hospital",
+                        "value": "Army Alhama de Murcia Hospital",
+                    },
+                },
+            ],
+        )
+
+    def test_serialize_plan_for_frontend_keeps_statistical_test_filters(self) -> None:
+        serialize_plan_for_frontend = _load_serialize_plan_for_frontend()
+
+        plan: Dict[str, Any] = {
+            "statistical_tests": [
+                {
+                    "test_type": "MANN_WHITNEY_U_TEST",
+                    "metrics": [{"metric": "DTN"}, {"metric": "DTN"}],
+                    "filters": {
+                        "type": "AndFilter",
+                        "and_": [
+                            {"type": "DateFilter", "operator": "GE", "value": "2025-10-01"},
+                            {"type": "DateFilter", "operator": "LE", "value": "2025-12-31"},
+                        ],
+                    },
+                }
+            ]
+        }
+
+        payload = serialize_plan_for_frontend(plan)
+
+        tests = cast(List[Dict[str, Any]], payload["statistical_tests"])
+        self.assertEqual(
+            tests[0]["filters"],
+            {
+                "type": "ANDFILTER",
+                "and": [
+                    {"type": "DATEFILTER", "operator": "GE", "value": "2025-10-01"},
+                    {"type": "DATEFILTER", "operator": "LE", "value": "2025-12-31"},
+                ],
+            },
+        )
+
     def test_serialize_plan_for_frontend_keeps_statistical_tests_when_charts_absent(self) -> None:
         serialize_plan_for_frontend = _load_serialize_plan_for_frontend()
 

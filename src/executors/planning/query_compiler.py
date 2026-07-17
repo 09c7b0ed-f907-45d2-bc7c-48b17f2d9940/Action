@@ -95,11 +95,15 @@ def _group_by_from_semantics(chart: S.ChartSpec) -> Optional[List[GroupBySpec]]:
             continue
 
         if kind == "AGE":
-            groups.append(GroupByCanonicalField(field="AGE", values=split.categories))
+            if not split.buckets:
+                raise ValueError("Semantic split kind AGE requires split.buckets")
+            groups.append(GroupByAge(buckets=split.buckets))
             continue
 
         if kind == "NIHSS":
-            groups.append(GroupByCanonicalField(field="ADMISSION_NIHSS", values=split.categories))
+            if not split.buckets:
+                raise ValueError("Semantic split kind NIHSS requires split.buckets")
+            groups.append(GroupByNIHSS(buckets=split.buckets))
             continue
 
         if kind == "CUSTOM":

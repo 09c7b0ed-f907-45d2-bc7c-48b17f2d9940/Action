@@ -7,7 +7,7 @@ from src.domain.dto.charts.types import ChartAxis
 from src.domain.graphql.request import DataOrigin, MetricRequest
 from src.domain.graphql.ssot_enums import MetricType
 from src.domain.langchain import schema as S
-from src.executors.planning.ssot_metric_defaults import get_distribution_defaults, get_histogram_axes
+from src.executors.planning.ssot_metric_defaults import get_distribution_defaults, get_histogram_axes, is_enum_metric
 
 
 def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
@@ -73,13 +73,6 @@ def _resolve_numeric_request_options(
     return resolved_bins, int(resolved_lower), int(resolved_upper)
 
 
-def _has_value_domain_override(plan_chart: S.ChartSpec) -> bool:
-    numeric_resolution = cast(Optional[S.NumericResolutionSpec], getattr(plan_chart, "numeric_resolution", None))
-    if numeric_resolution is None or numeric_resolution.value_domain is None:
-        return False
-    return numeric_resolution.value_domain.lower_bound is not None or numeric_resolution.value_domain.upper_bound is not None
-
-
 def build_metric_requests(
     plan_chart: S.ChartSpec,
 ) -> tuple[List[MetricRequest], Optional[tuple[ChartAxis, ChartAxis]], List[Optional[DataOrigin]], List[Optional[str]]]:
@@ -88,8 +81,6 @@ def build_metric_requests(
     metric_scope_labels: List[Optional[str]] = []
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
     chart_type_upper = (plan_chart.chart_type or "").upper()
-    include_distribution = True
-    include_bounds = chart_type_upper in {"LINE", "BAR"} and _has_value_domain_override(plan_chart)
 
     for metric in plan_chart.metrics:
         metric_data_origin: Optional[DataOrigin] = None
@@ -98,23 +89,23 @@ def build_metric_requests(
         metric_scope_label = _metric_scope_label(metric)
 
         metric_request = MetricRequest(metricType=MetricType(metric.metric)).with_stats()
-        resolved_bins, resolved_min, resolved_max = _resolve_numeric_request_options(
-            plan_chart=plan_chart,
-            metric_code=metric.metric,
-        )
 
-        if include_distribution:
+        if is_enum_metric(metric.metric):
+            metric_request = metric_request.with_categorical()
+        else:
+            resolved_bins, resolved_min, resolved_max = _resolve_numeric_request_options(
+                plan_chart=plan_chart,
+                metric_code=metric.metric,
+            )
+
             metric_request = metric_request.with_distribution(
                 bin_count=resolved_bins,
                 lower=resolved_min,
                 upper=resolved_max,
             )
 
-            if len(plan_chart.metrics) == 1:
-                if chart_type_upper == "HISTOGRAM":
-                    derived_axes = get_histogram_axes(metric.metric, resolved_min, resolved_max)
-        elif include_bounds:
-            metric_request = metric_request.with_bounds(lower=resolved_min, upper=resolved_max)
+            if len(plan_chart.metrics) == 1 and chart_type_upper == "HISTOGRAM":
+                derived_axes = get_histogram_axes(metric.metric, resolved_min, resolved_max)
 
         metric_requests.append(metric_request)
         metric_data_origins.append(metric_data_origin)

@@ -201,7 +201,7 @@ class AnalyticsCenterClient:
         headers["x-trace-id"] = trace_label
 
         request_payload: ProxyRequestPayload = {
-            # Preserve the exact Rasa sender_id value for proxy token lookup.
+            # senderId carries conversation routing identity (for example thread scoping).
             "senderId": user_sub,
             "target": self.target,
             "request": {

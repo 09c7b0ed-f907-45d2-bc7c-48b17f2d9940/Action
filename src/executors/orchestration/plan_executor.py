@@ -12,7 +12,7 @@ from src.domain.dto.charts.types import ChartSeries
 from src.domain.dto.execution_summary import ExecutionBatchSummary, ExecutionSummary
 from src.domain.dto.response import VisualizationResponse
 from src.domain.graphql.request import BooleanFilter as GQLBooleanFilter
-from src.domain.graphql.request import DataOrigin, TimePeriod
+from src.domain.graphql.request import DataOrigin, TimePeriod, default_time_bounds
 from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import IntegerFilter as GQLIntegerFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
@@ -111,6 +111,13 @@ _graphql_timeout_raw = (
 )
 _graphql_timeout_seconds = _parse_timeout_env(
     "EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", _graphql_timeout_raw, 5
+)
+
+_origin_scope_timeout_raw = (
+    env_util.get_env("EXECUTOR_ORIGIN_SCOPE_TIMEOUT_SECONDS", default="25") or "25"
+)
+_ORIGIN_SCOPE_TIMEOUT_SECONDS = _parse_timeout_env(
+    "EXECUTOR_ORIGIN_SCOPE_TIMEOUT_SECONDS", _origin_scope_timeout_raw, 5
 )
 
 client = GraphQLProxyClient(
@@ -801,16 +808,10 @@ def _execute_mann_whitney_test(
         )
     start_bound, end_bound = _collect_date_bounds(base_filter)
     if start_bound is None or end_bound is None:
-        raise VisualizationExecutionError(
-            user_message=(
-                "Mann-Whitney U requires explicit start and end dates for the cohorts."
-            ),
-            reason="missing_statistical_date_bounds",
-            code="EXEC_STATS_MISSING_DATE_BOUNDS",
-            trace_id=trace_id,
-            clarification_type="analysis_plan",
-            clarification_options=[],
-        )
+        # Mirror TimePeriod's implicit default window (see default_time_bounds) so a
+        # Mann-Whitney request without explicit dates behaves the same as a chart
+        # request without explicit dates, instead of rejecting outright.
+        start_bound, end_bound = default_time_bounds()
     time_period_payload = {"startDate": start_bound, "endDate": end_bound}
     results = _execute_mann_whitney_query(
         metric_values=metric_values,
@@ -885,10 +886,23 @@ def _validate_statistical_tests_readiness(
     if not tests:
         return
 
-    for test in tests:
+    index = 0
+    while index < len(tests):
+        test = tests[index]
         test_type = (test.test_type or "").upper().strip()
         if test_type != "MANN_WHITNEY_U_TEST":
+            index += 1
             continue
+
+        if index + 1 < len(tests):
+            next_test = tests[index + 1]
+            next_type = (next_test.test_type or "").upper().strip()
+            if (
+                next_type == "MANN_WHITNEY_U_TEST"
+                and _can_pair_temporal_mann_whitney_tests(test, next_test)
+            ):
+                index += 2
+                continue
 
         metrics = list(test.metrics or [])
         if len(metrics) < 2:
@@ -918,6 +932,8 @@ def _validate_statistical_tests_readiness(
                 clarification_type="analysis_plan",
                 clarification_options=[],
             )
+
+        index += 1
 
 
 def _emit_compiler_diagnostics(
@@ -1303,11 +1319,33 @@ async def execute_plan_async(
         "[plan_executor] execute_plan_async start",
         extra={"trace_id": trace_id_resolved},
     )
+    logger.info(
+        "[plan_executor] resolving plan metric origins",
+        extra={"trace_id": trace_id_resolved},
+    )
 
     try:
-        plan = resolve_plan_metric_origins(
-            plan=plan, user_sub=user_sub, trace_id=trace_id_resolved
+        plan = await asyncio.wait_for(
+            asyncio.to_thread(
+                resolve_plan_metric_origins,
+                plan=plan,
+                user_sub=user_sub,
+                trace_id=trace_id_resolved,
+            ),
+            timeout=_ORIGIN_SCOPE_TIMEOUT_SECONDS,
         )
+    except asyncio.TimeoutError as exc:
+        raise VisualizationExecutionError(
+            user_message=(
+                "I could not resolve your hospital scope in time. "
+                "Please try again or specify both cohorts explicitly."
+            ),
+            reason="origin_scope_resolution_timeout",
+            code="EXEC_ORIGIN_SCOPE_TIMEOUT",
+            trace_id=trace_id_resolved,
+            clarification_type="mine",
+            clarification_options=[],
+        ) from exc
     except OriginScopeResolutionError as exc:
         raise VisualizationExecutionError(
             user_message=str(exc),
@@ -1317,6 +1355,15 @@ async def execute_plan_async(
             clarification_type=exc.clarification_type,
             clarification_options=exc.clarification_options,
         ) from exc
+
+    logger.info(
+        "[plan_executor] resolved plan metric origins",
+        extra={
+            "trace_id": trace_id_resolved,
+            "charts_count": len(plan.charts or []),
+            "statistical_tests_count": len(plan.statistical_tests or []),
+        },
+    )
 
     normalization_summary = None
     _validate_statistical_tests_readiness(plan=plan, trace_id=trace_id_resolved)
@@ -1342,6 +1389,14 @@ async def execute_plan_async(
     )
 
     for planChart in plan_charts:
+        logger.debug(
+            "[plan_executor] building metric requests for chart",
+            extra={
+                "trace_id": trace_id_resolved,
+                "chart_type": planChart.chart_type,
+                "metric_count": len(planChart.metrics),
+            },
+        )
         metric_requests, derived_axes, metric_data_origins, metric_scope_labels = (
             build_metric_requests(plan_chart=planChart)
         )

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional, Protocol, cast
@@ -9,9 +10,9 @@ from rasa_sdk.events import FollowupAction, SlotSet
 from src.actions.error_messages import visualization_error_payload
 from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
+    canonicalize_ssot_entities,
     extract_entities_from_latest_message,
     format_execution_summary,
-    normalize_entities,
     pretty_print_graphql_query,
     resolve_override_language,
     serialize_plan_for_frontend,
@@ -53,6 +54,25 @@ _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
 
 _PLANNER_MAX_RETRIES = 2
 _EXECUTOR_MAX_CONCURRENCY = 4
+
+
+def _parse_positive_float_env(name: str, raw_value: str, minimum: float) -> float:
+    token = (raw_value or "").strip()
+    try:
+        parsed = float(token)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric, got: {raw_value!r}") from exc
+    if parsed < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got: {parsed}")
+    return parsed
+
+
+_execute_plan_timeout_raw = (
+    env_util.get_env("ACTIONS_EXECUTE_PLAN_TIMEOUT_SECONDS", default="90") or "90"
+)
+_EXECUTE_PLAN_TIMEOUT_SECONDS = _parse_positive_float_env(
+    "ACTIONS_EXECUTE_PLAN_TIMEOUT_SECONDS", _execute_plan_timeout_raw, 5.0
+)
 
 DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
@@ -191,8 +211,6 @@ def _collect_planner_diagnostics() -> Optional[Dict[str, Any]]:
 def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
     user_messages: List[str] = []
     rejected_indices: set[int] = set()
-    thread_start = 0
-    user_count = 0
     last_user_index: Optional[int] = None
 
     for ev in events:
@@ -200,23 +218,24 @@ def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallbac
             text_any = ev.get("text")
             if isinstance(text_any, str) and text_any.strip():
                 user_messages.append(text_any.strip())
-                last_user_index = user_count
-                user_count += 1
+                last_user_index = len(user_messages) - 1
 
         elif ev.get("event") == "bot":
             payload = _extract_bot_custom_payload(ev)
             if payload and payload.get("type") == "visualization_query_decision" and payload.get("decision") == "reject" and last_user_index is not None:
                 rejected_indices.add(last_user_index)
 
-        elif ev.get("event") == "action":
-            if ev.get("name") == "action_oneshot_generate_visualization":
-                thread_start = user_count
-
     if not user_messages:
         return []
 
+    # Use the same topic-boundary rule as _collect_visualization_thread_entities so an
+    # off-topic turn (e.g. misclassified intent) breaks the thread here too, instead of
+    # letting stale, abandoned requests bleed into a brand-new unrelated question.
+    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
+    thread_start = anchor_user_idx if anchor_user_idx >= 0 else max(0, len(user_messages) - fallback_limit)
+
     sliced = user_messages[thread_start:][-fallback_limit:]
-    sliced_global_start = max(thread_start, user_count - fallback_limit)
+    sliced_global_start = max(thread_start, len(user_messages) - fallback_limit)
     return [msg for i, msg in enumerate(sliced) if (sliced_global_start + i) not in rejected_indices]
 
 
@@ -489,23 +508,27 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
-                extracted_entities = normalize_entities(
+                extracted_entities = canonicalize_ssot_entities(
                     merge_latest_with_thread_entities(
-                        normalize_entities(extract_entities_from_latest_message(latest_msg)),
+                        canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg)),
                         events,
                         fallback_limit=fallback_limit,
                     )
                 )
                 conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
-
-                planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or user_message
+                # The current turn's own text is the question; prior turns are carried
+                # via extracted_entities (structured) and conversation_history (passed
+                # separately to the orchestrator's own history field), not by joining
+                # raw text here — doing so previously confused the planner into
+                # blending unrelated requests together.
+                planner_question = user_message
 
                 intent_name = _extract_intent_name_from_user_event(latest_msg)
                 is_update = intent_name == "update_visualization"
                 if is_update:
                     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
                     if latest_plan_summary:
-                        planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
+                        planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
 
                 outcome = orchestrate_visualization_request(
                     question=planner_question,
@@ -547,6 +570,80 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     SlotSet("guided_hospital_scope", None),
                     FollowupAction("action_oneshot_generate_visualization"),
                 ]
+            except asyncio.TimeoutError:
+                timeout_message = (
+                    "The visualization execution took too long and timed out. "
+                    "Please try again, narrow the scope, or shorten the date range."
+                )
+                logger.warning(
+                    "Visualization execution timed out",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.visualization.work.timeout",
+                        outcome="failure",
+                        timeout_seconds=_EXECUTE_PLAN_TIMEOUT_SECONDS,
+                    ),
+                )
+                ctx.say(
+                    json_message={
+                        "type": "visualization_error",
+                        "trace_id": trace_id,
+                        "error_code": "EXEC_TIMEOUT",
+                        "reason": "timeout",
+                        "message": timeout_message,
+                        "retry": True,
+                    }
+                )
+                ctx.say(
+                    text=translate(
+                        "action.common.error_with_context",
+                        language=language,
+                        params={
+                            "message": timeout_message,
+                            "code": "EXEC_TIMEOUT",
+                            "trace_id": trace_id,
+                        },
+                    )
+                )
+                return None
+            except asyncio.TimeoutError:
+                timeout_message = (
+                    "The visualization execution took too long and timed out. "
+                    "Please try again, narrow the scope, or shorten the date range."
+                )
+                logger.warning(
+                    "Visualization execution timed out",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.visualization.work.timeout",
+                        outcome="failure",
+                        timeout_seconds=_EXECUTE_PLAN_TIMEOUT_SECONDS,
+                    ),
+                )
+                ctx.say(
+                    json_message={
+                        "type": "visualization_error",
+                        "trace_id": trace_id,
+                        "error_code": "EXEC_TIMEOUT",
+                        "reason": "timeout",
+                        "message": timeout_message,
+                        "retry": True,
+                    }
+                )
+                ctx.say(
+                    text=translate(
+                        "action.common.error_with_context",
+                        language=language,
+                        params={
+                            "message": timeout_message,
+                            "code": "EXEC_TIMEOUT",
+                            "trace_id": trace_id,
+                        },
+                    )
+                )
+                return None
             except Exception as e:
                 logger.exception(
                     "Error routing visualization request",
@@ -595,15 +692,19 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     latest_meta = ctx.metadata
     latest_any = ctx.tracker_snapshot.get("latest_message")
     latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
-    extracted_entities = normalize_entities(extract_entities_from_latest_message(latest_msg))
+    extracted_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
     override_language = resolve_override_language(latest_meta, ctx.slots)
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
-    extracted_entities = normalize_entities(merge_latest_with_thread_entities(extracted_entities, events, fallback_limit=12))
+    extracted_entities = canonicalize_ssot_entities(merge_latest_with_thread_entities(extracted_entities, events, fallback_limit=12))
     conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
 
-    planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or ctx.text
+    # ctx.text is the current turn's own text; prior turns are carried via
+    # extracted_entities (structured) and conversation_history (passed separately to
+    # the orchestrator's own history field), not by joining raw text here — doing so
+    # previously confused the planner into blending unrelated requests together.
+    planner_question = ctx.text
 
     latest_any = ctx.tracker_snapshot.get("latest_message")
     latest_msg_for_intent = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
@@ -611,7 +712,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     is_update = intent_name == "update_visualization"
 
     if latest_plan_summary and is_update:
-        planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
+        planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
 
     return {
         "user_message": ctx.text,
@@ -1177,14 +1278,22 @@ class ActionOneShotGenerateVisualization(LongAction):
                     }
                 )
 
-                visualization = await execute_plan_async(
-                    plan_obj,
-                    user_sub=user_sub,
-                    max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
-                    progress_cb=progress,
-                    summary_cb=on_summary,
-                    trace_id=trace_id,
-                    query_cb=on_graphql_query,
+                def _run_execute_plan() -> Any:
+                    return asyncio.run(
+                        execute_plan_async(
+                            plan_obj,
+                            user_sub=user_sub,
+                            max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
+                            progress_cb=progress,
+                            summary_cb=on_summary,
+                            trace_id=trace_id,
+                            query_cb=on_graphql_query,
+                        )
+                    )
+
+                visualization = await asyncio.wait_for(
+                    asyncio.to_thread(_run_execute_plan),
+                    timeout=_EXECUTE_PLAN_TIMEOUT_SECONDS,
                 )
                 visualization_payload = visualization.model_dump(mode="json")
                 ctx.say(json_message=visualization_payload)
@@ -1200,6 +1309,43 @@ class ActionOneShotGenerateVisualization(LongAction):
                 is_update_flow: bool = planner_question_str.startswith("Previous chart plan")
                 confirmation = _build_confirmation_message(plan_obj, is_update=is_update_flow)
                 ctx.say(text=confirmation)
+            except asyncio.TimeoutError:
+                timeout_message = (
+                    "The visualization execution took too long and timed out. "
+                    "Please try again, narrow the scope, or shorten the date range."
+                )
+                logger.warning(
+                    "Visualization execution timed out",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.visualization.work.timeout",
+                        outcome="failure",
+                        timeout_seconds=_EXECUTE_PLAN_TIMEOUT_SECONDS,
+                    ),
+                )
+                ctx.say(
+                    json_message={
+                        "type": "visualization_error",
+                        "trace_id": trace_id,
+                        "error_code": "EXEC_TIMEOUT",
+                        "reason": "timeout",
+                        "message": timeout_message,
+                        "retry": True,
+                    }
+                )
+                ctx.say(
+                    text=translate(
+                        "action.common.error_with_context",
+                        language=language,
+                        params={
+                            "message": timeout_message,
+                            "code": "EXEC_TIMEOUT",
+                            "trace_id": trace_id,
+                        },
+                    )
+                )
+                return None
             except Exception as e:
                 if _is_missing_temporal_bounds_error(e):
                     clarification_message = _temporal_bounds_clarification(language)

@@ -173,6 +173,38 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
         self.assertIsNone(test.metrics[0].data_origin.provider_group_id)
         self.assertIsNone(test.metrics[1].data_origin.provider_group_id)
 
+    def test_builds_deterministic_plan_from_scope_entities(self) -> None:
+        entities = {
+            "metric": ["DTN"],
+            "date": ["2023-01-01", "2023-12-31"],
+            "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+            "hospital_scope_reference": ["my hospital"],
+            "hospital_name": ["Army Alhama de Murcia Hospital"],
+        }
+
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+            ),
+        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            outcome = orchestrate_visualization_request(
+                question="Can you compare my dtn against army alhama de murcia hospital using a mann whitney u test",
+                entities=entities,
+                include_plan=True,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "deterministic_statistical_plan")
+        self.assertIsNotNone(outcome.plan)
+        self.assertFalse(llm_plan.called)
+
+        test = outcome.plan.statistical_tests[0]
+        self.assertEqual(test.metrics[0].origin_scope.scope_type, "mine")
+        self.assertEqual(test.metrics[1].origin_scope.scope_type, "provider_name")
+        self.assertEqual(test.metrics[1].origin_scope.value, "Army Alhama de Murcia Hospital")
+
 
 if __name__ == "__main__":
     unittest.main()

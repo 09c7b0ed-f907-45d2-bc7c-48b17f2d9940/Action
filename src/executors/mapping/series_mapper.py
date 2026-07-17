@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import TimePeriod
+from src.executors.planning.ssot_metric_defaults import get_enum_labels
 from src.shared.ssot_loader import get_enum_option_label, get_metric_display_name
 
 
-def metric_label_from_alias(metric_alias: str) -> str:
+def _metric_code_from_alias(metric_alias: str) -> str:
     code = metric_alias
     if code.lower().startswith("metric_"):
         code = code[len("metric_") :]
-    return get_metric_display_name(code.upper())
+    return code.upper()
+
+
+def metric_label_from_alias(metric_alias: str) -> str:
+    return get_metric_display_name(_metric_code_from_alias(metric_alias))
 
 
 def period_to_label(tp: TimePeriod) -> str:
@@ -77,7 +82,7 @@ def map_metrics_payload_to_series(
     group_by_field: Optional[str],
     add_time_period_labels: bool,
     scope_label: Optional[str] = None,
-    batched_time_periods: Optional[List[Any]] = None,  # ADD THIS
+    batched_time_periods: Optional[List[Any]] = None,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
 
@@ -157,7 +162,20 @@ def map_metrics_payload_to_series(
                 )
                 continue
 
-            if not kpi.kpi1.d1:
+            metric_labels = getattr(metric, "labels", None)
+            metric_code = _metric_code_from_alias(metric_name)
+            case_counts = kpi.kpi1.case_count or []
+
+            if not metric_labels and not kpi.kpi1.d1 and len(case_counts) == 1 and kpi.kpi1.cohort_size is not None:
+                # Boolean-shaped Enum metric (e.g. WAKEUP_STROKE): backend returns a single
+                # caseCount (the "true"/first-category count) with no labels array. Fall back
+                # to the SSOT's own category labels and derive the complement count.
+                ssot_labels = get_enum_labels(metric_code)
+                if ssot_labels and len(ssot_labels) >= 2:
+                    metric_labels = ssot_labels[:2]
+                    case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
+
+            if not kpi.kpi1.d1 and not metric_labels:
                 raise ValueError(
                     "Distribution KPI payload is missing d1 histogram/series data."
                 )
@@ -185,10 +203,25 @@ def map_metrics_payload_to_series(
                     parts.append(end)
 
             series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
+
+            if kpi.kpi1.d1:
+                points = [ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)]
+            else:
+                # Categorical (Enum) metric: labels and caseCount are parallel arrays,
+                # one entry per category (e.g. male/female/unknown), not a numeric histogram.
+                if len(case_counts) != len(metric_labels or []):
+                    raise ValueError(
+                        "Categorical KPI payload has mismatched labels/caseCount lengths."
+                    )
+                points = [
+                    ChartPoint(x=label, y=float(count))
+                    for label, count in zip(cast(List[str], metric_labels), case_counts)
+                ]
+
             series.append(
                 ChartSeries(
                     name=series_name,
-                    data=[ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)],
+                    data=points,
                 )
             )
 

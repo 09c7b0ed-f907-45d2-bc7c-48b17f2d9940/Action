@@ -6,6 +6,7 @@ from src.domain.langchain.schema import (
     AnalysisPlan,
     AndFilter,
     AxisSemanticsSpec,
+    Bucket,
     ChartSpec,
     DateFilter,
     MeasureSemanticsSpec,
@@ -84,6 +85,35 @@ def example_dtn_by_sex() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_by_age_10y_buckets() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["BAR"],
+    }
+    buckets = [Bucket(min=start, max=start + 10) for start in range(0, 100, 10)]
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="AGE", buckets=buckets)],
+                ),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me DTN grouped by age in 10-year buckets\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_dtn_by_first_contact_place() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["DTN"],
@@ -134,6 +164,26 @@ def example_dtn_line_basic() -> Tuple[str, str]:
     )
     user = (
         "USER_UTTERANCE:\nShow me a line graph of DTN\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_sex_distribution_bar() -> Tuple[str, str]:
+    detected_entities = {"metric": ["SEX"], "chart_type": ["BAR"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                semantics=_semantics(metric="SEX", intent="DISTRIBUTION", measure="DISTRIBUTION"),
+                metrics=[MetricSpec(metric="SEX")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a bar chart for SEX\n\nENTITIES_DETECTED(JSON):\n"
         + json.dumps(detected_entities)
     )
     assistant = plan.model_dump_json(indent=2)
@@ -732,12 +782,14 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_last_6_months_by_sex(),
         example_dtn_histogram_custom_buckets(),
         example_dtn_line_basic(),
+        example_sex_distribution_bar(),
         example_dtn_males_only_filter(),
         example_dtn_females_only_filter(),
         example_dtn_ischemic_only_filter(),
         example_dtn_by_first_contact_place(),
         example_dtn_by_sex(),
         example_dtn_by_sex_and_stroke(),
+        example_dtn_by_age_10y_buckets(),
         example_statistical_test_dtn_by_sex(),
         example_statistical_test_dtn_by_quarter(),
         example_dtn_year_filter(),

@@ -65,6 +65,33 @@ def _normalize_axis_display_label(raw: str) -> str:
     return " ".join(out_words)
 
 
+def get_enum_labels(metric_code: str) -> Optional[list[str]]:
+    """Return SSOT display labels for an Enum metric's categories, in property order.
+
+    Used as a fallback when the backend's own `labels` field is null — some
+    boolean-shaped Enum metrics (e.g. WAKEUP_STROKE) return a single caseCount
+    with no labels array, rather than one entry per category.
+    """
+    code = (metric_code or "").upper()
+    meta = _mapping_to_dict(_METRIC_METADATA.get(code))
+    labels = meta.get("labels")
+    if isinstance(labels, list) and labels:
+        return [str(label) for label in cast(list, labels)]
+    return None
+
+
+def is_enum_metric(metric_code: str) -> bool:
+    """Return True if the metric's SSOT data_type is Enum (categorical, not numeric).
+
+    Enumeration-type metrics (e.g. SEX, HOSPITALIZED_IN) reject the backend's
+    numeric kpi(kpiOptions/distribution) query shape; they must be requested
+    via the bare kpi + labels shape instead (see MetricRequest.with_categorical).
+    """
+    code = (metric_code or "").upper()
+    meta = _mapping_to_dict(_METRIC_METADATA.get(code))
+    return str(meta.get("data_type") or "").strip().lower() == "enum"
+
+
 def get_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
     """Return (bins, min_value, max_value) from SSOT metadata.
 
