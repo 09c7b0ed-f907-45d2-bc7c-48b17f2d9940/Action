@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from threading import Lock
 from typing import (
     Any,
@@ -16,7 +17,12 @@ from typing import (
 )
 
 from src.actions.i18n import translate
-from src.shared.ssot_loader import resolve_chart_type, resolve_sex, resolve_stroke_type
+from src.shared.ssot_loader import (
+    resolve_chart_type,
+    resolve_groupby_canonical,
+    resolve_sex,
+    resolve_stroke_type,
+)
 from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
@@ -75,6 +81,33 @@ def normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
         else:
             normalized[key] = value
     return normalized
+
+
+def _infer_groupby_from_text(text: str) -> Optional[str]:
+    """Best-effort fallback for phrases like 'grouped by inr measurement mode'."""
+    candidate_text = (text or "").strip()
+    if not candidate_text:
+        return None
+
+    lowered = candidate_text.lower()
+    if "group by" not in lowered and "grouped by" not in lowered and "split by" not in lowered:
+        return None
+
+    patterns = [
+        r"(?:grouped?\s+by|split\s+by)\s+([^,.!?;]+)",
+        r"\bby\s+([^,.!?;]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, candidate_text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw = (match.group(1) or "").strip()
+        if not raw:
+            continue
+        resolved = resolve_groupby_canonical(raw)
+        if isinstance(resolved, str) and resolved.strip():
+            return resolved.strip()
+    return None
 
 
 def pretty_print_graphql_query(query: str) -> str:
@@ -423,6 +456,14 @@ def extract_entities_from_latest_message(
             existing_list.append(value)
         else:
             extracted[key_any] = [existing, value]
+
+    # Fallback: infer canonical group_by from text when NLU did not emit one.
+    if "group_by" not in extracted:
+        text_any = latest_message.get("text")
+        text = text_any if isinstance(text_any, str) else ""
+        inferred_group_by = _infer_groupby_from_text(text)
+        if inferred_group_by:
+            extracted["group_by"] = inferred_group_by
 
     return extracted
 

@@ -232,6 +232,33 @@ def _metric_candidates(question: str, limit: int = 8) -> List[str]:
     return out
 
 
+def _entity_metric_candidates(entities: Dict[str, Any], limit: int = 8) -> List[str]:
+    raw_value = entities.get("metric")
+    if isinstance(raw_value, str):
+        raw_values = [raw_value]
+    elif isinstance(raw_value, list):
+        raw_values = [item for item in cast(List[Any], raw_value) if isinstance(item, str)]
+    else:
+        raw_values = []
+
+    out: List[str] = []
+    for value in raw_values:
+        for candidate in _metric_candidates(value, limit=limit):
+            normalized_candidate = candidate.strip().upper()
+            if normalized_candidate and normalized_candidate not in out:
+                out.append(normalized_candidate)
+            if len(out) >= limit:
+                return out
+
+        normalized_value = value.strip().upper()
+        if normalized_value and normalized_value not in out:
+            out.append(normalized_value)
+        if len(out) >= limit:
+            return out
+
+    return out
+
+
 def _chart_types() -> List[str]:
     try:
         return [str(member) for member in ChartType]
@@ -295,7 +322,17 @@ def _decision_stage(
         "language": (language or "en").strip() or "en",
         "question": question or "",
         "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-        "metric_candidates_json": json.dumps(_metric_candidates(question or ""), ensure_ascii=False),
+        "metric_candidates_json": json.dumps(
+            list(
+                dict.fromkeys(
+                    [
+                        *_metric_candidates(question or ""),
+                        *_entity_metric_candidates(entities or {}),
+                    ]
+                )
+            ),
+            ensure_ascii=False,
+        ),
         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
         "conversation_history_json": json.dumps(conversation_history or [], ensure_ascii=False),
     }

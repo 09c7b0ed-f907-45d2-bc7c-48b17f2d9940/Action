@@ -16,6 +16,7 @@ from src.domain.langchain.schema import (
     SexFilter,
     StatisticalTestSpec,
     StrokeFilter,
+    TimeRange,
     TimeWindow,
 )
 
@@ -641,6 +642,61 @@ def example_group_by_stroke_type_bare() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_scatter_by_stroke_type_date_range() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["SCATTER"],
+        "stroke_type": ["STROKE_TYPE"],
+        "date": ["2023", "2026"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="SCATTER",
+                filters=AndFilter(
+                    and_=[
+                        DateFilter(operator="GE", value="2023-01-01"),
+                        DateFilter(operator="LE", value="2026-12-31"),
+                    ]
+                ),
+                group_by=[GroupByStrokeType(categories=None)],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nMake me a scatter plot of DTN from 2023 to 2026 group by stroke STROKE_TYPE\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_scatter_grouped_by_stroke_type() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["SCATTER"],
+        "stroke_type": ["STROKE_TYPE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="SCATTER",
+                group_by=[GroupByStrokeType(categories=None)],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a scatter plot of DTN grouped by stroke type\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
     detected_entities = {"sex": ["FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
     plan = AnalysisPlan(
@@ -665,6 +721,121 @@ def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
         '"group_by": [{"grain": "QUARTER"}], "metrics": [{"metric": "DTN"}]}]}\n\n'
         "Conversation context (oldest to newest user turns):\nfilter for female patients\n\n"
         "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_add_group_by_quarter_to_existing_sex_split() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "sex": ["MALE", "FEMALE"],
+        "group_by": ["QUARTER"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[
+                    GroupBySex(categories=["MALE", "FEMALE"]),
+                    GroupByTime(grain="QUARTER"),
+                ],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nPrevious chart plan (carry over everything except what the user explicitly changes):\n"
+        '{"charts": [{"chart_type": "LINE", "group_by": [{"type": "GroupBySex", "categories": ["MALE", "FEMALE"]}], '
+        '"metrics": [{"metric": "DTN"}]}]}\n\n'
+        "Conversation context (oldest to newest user turns):\nalso group by quarter\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_add_time_grain_to_existing_stroke_grouping() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "stroke_type": ["STROKE_TYPE"],
+        "group_by": ["MONTH"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[
+                    GroupByStrokeType(categories=None),
+                    GroupByTime(grain="MONTH"),
+                ],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nPrevious chart plan (carry over everything except what the user explicitly changes):\n"
+        '{"charts": [{"chart_type": "LINE", "group_by": [{"type": "GroupByStrokeType", "categories": null}], '
+        '"metrics": [{"metric": "DTN"}]}]}\n\n'
+        "Conversation context (oldest to newest user turns):\nalso apply monthly time grain\n\n"
+        "ENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_replace_sex_group_by_with_stroke_type() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "stroke_type": ["STROKE_TYPE"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[GroupByStrokeType(categories=None)],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nPrevious chart plan (carry over everything except what the user explicitly changes):\n"
+        '{"charts": [{"chart_type": "LINE", "group_by": [{"type": "GroupBySex", "categories": ["MALE", "FEMALE"]}], '
+        '"metrics": [{"metric": "DTN"}]}]}\n\n'
+        "Conversation context (oldest to newest user turns):\nreplace sex grouping with stroke type grouping\n\n"
+        "ENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_patient_sex_bar_and_group_by_quarter() -> Tuple[str, str]:
+    detected_entities = {
+        "chart_type": ["BAR"],
+        "group_by": ["QUARTER"],
+        "metric": ["SEX"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                group_by=[GroupByTime(grain="QUARTER")],
+                metrics=[MetricSpec(metric="SEX")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nshow me patient sex in a bar chart and also group by quarter\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
     )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
@@ -736,6 +907,38 @@ def example_dtn_grouped_by_sex_bare() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_quarterly_explicit_date_range() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "group_by": ["quarter"],
+        "date": ["2023 to 2026"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[
+                    GroupByTime(
+                        grain="QUARTER",
+                        window=TimeRange(
+                            start_date="2023-01-01", end_date="2026-12-31"
+                        ),
+                    )
+                ],
+                metrics=[MetricSpec(metric="ADMISSION_NIHSS")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line chart of Admission NIHSS per quarter from 2023 to 2026\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def get_few_shot_examples() -> List[Dict[str, str]]:
     examples: List[Dict[str, str]] = []
     for user, assistant in [
@@ -757,10 +960,17 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_mw_my_hospital_vs_national(),
         example_dtn_year_filter(),
         example_dtn_quarterly(),
+        example_dtn_quarterly_explicit_date_range(),
         example_dtn_monthly(),
         example_dtn_ischemic_only_filter(),
         example_group_by_stroke_type_bare(),
+        example_dtn_scatter_grouped_by_stroke_type(),
+        example_dtn_scatter_by_stroke_type_date_range(),
         example_dtn_ischemic_and_female_filter(),
+        example_replace_sex_group_by_with_stroke_type(),
+        example_add_group_by_quarter_to_existing_sex_split(),
+        example_add_time_grain_to_existing_stroke_grouping(),
+        example_patient_sex_bar_and_group_by_quarter(),
         example_mw_hospital_vs_hospital(),
         example_dtn_grouped_by_sex_bare(),
     ]:

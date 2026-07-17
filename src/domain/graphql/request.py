@@ -9,7 +9,14 @@ from typing import Any, List, Literal, Mapping, Optional, Union, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from src.domain.graphql.ssot_enums import BooleanPropertyType, GroupByType, MetricType, Operator, SexType, StrokeType
+from src.domain.graphql.ssot_enums import (
+    BooleanPropertyType,
+    GroupByType,
+    MetricType,
+    Operator,
+    SexType,
+    StrokeType,
+)
 from src.shared.ssot_loader import get_metric_metadata
 
 
@@ -49,6 +56,14 @@ def _numeric_filter_properties() -> set[str]:
 
 
 _NUMERIC_FILTER_PROPERTIES = _numeric_filter_properties()
+_METRIC_METADATA = get_metric_metadata()
+
+
+def _metric_data_type(metric_code: str) -> str:
+    meta = _METRIC_METADATA.get((metric_code or "").upper()) or {}
+    data_type = str(meta.get("data_type") or "").strip().lower()
+    # Preserve backward compatibility with partially populated metadata.
+    return data_type or "numeric"
 
 
 def _default_time_bounds() -> tuple[str, str]:
@@ -69,7 +84,9 @@ class IntegerFilter(BaseModel):
         normalized = (value or "").strip().upper()
         if normalized not in _NUMERIC_FILTER_PROPERTIES:
             allowed = sorted(_NUMERIC_FILTER_PROPERTIES)
-            raise ValueError(f"{value} is not a valid numeric filter property. Allowed: {allowed}")
+            raise ValueError(
+                f"{value} is not a valid numeric filter property. Allowed: {allowed}"
+            )
         return normalized
 
 
@@ -106,13 +123,24 @@ class LogicalFilter(BaseModel):
     """Logical combination of filters (AND, OR, NOT)"""
 
     operator: Literal["AND", "OR", "NOT"]
-    children: List[Union["LogicalFilter", IntegerFilter, BooleanFilter, SexFilter, StrokeFilter, DateFilter]]
+    children: List[
+        Union[
+            "LogicalFilter",
+            IntegerFilter,
+            BooleanFilter,
+            SexFilter,
+            StrokeFilter,
+            DateFilter,
+        ]
+    ]
 
 
 LogicalFilter.model_rebuild()
 
 
-FilterType = Union[LogicalFilter, IntegerFilter, BooleanFilter, SexFilter, StrokeFilter, DateFilter]
+FilterType = Union[
+    LogicalFilter, IntegerFilter, BooleanFilter, SexFilter, StrokeFilter, DateFilter
+]
 
 
 class MetricOptions(BaseModel):
@@ -141,17 +169,23 @@ class MetricRequest(BaseModel):
     include_grouping: bool = Field(default=False, alias="includeGrouping")
 
     metric_options: Optional[MetricOptions] = Field(default=None, alias="metricOptions")
-    distribution_options: Optional[DistributionOptions] = Field(default=None, alias="distributionOptions")
+    distribution_options: Optional[DistributionOptions] = Field(
+        default=None, alias="distributionOptions"
+    )
 
     def with_stats(self) -> "MetricRequest":
         """Builder method: include statistical measures"""
         self.include_stats = True
         return self
 
-    def with_distribution(self, bin_count: int = 20, lower: int = 0, upper: int = 100) -> "MetricRequest":
+    def with_distribution(
+        self, bin_count: int = 20, lower: int = 0, upper: int = 100
+    ) -> "MetricRequest":
         """Builder method: include distribution data"""
         self.include_distribution = True
-        self.distribution_options = DistributionOptions(binCount=bin_count, lowerBound=lower, upperBound=upper)
+        self.distribution_options = DistributionOptions(
+            binCount=bin_count, lowerBound=lower, upperBound=upper
+        )
         if not self.metric_options:
             self.metric_options = MetricOptions()
         self.metric_options.lower_boundary = lower
@@ -170,8 +204,12 @@ class MetricRequest(BaseModel):
 class TimePeriod(BaseModel):
     """Time period for the query"""
 
-    start_date: Optional[str] = Field(default_factory=lambda: _default_time_bounds()[0], alias="startDate")
-    end_date: Optional[str] = Field(default_factory=lambda: _default_time_bounds()[1], alias="endDate")
+    start_date: Optional[str] = Field(
+        default_factory=lambda: _default_time_bounds()[0], alias="startDate"
+    )
+    end_date: Optional[str] = Field(
+        default_factory=lambda: _default_time_bounds()[1], alias="endDate"
+    )
 
     @model_validator(mode="after")
     def _fill_none_bounds(self):
@@ -190,13 +228,17 @@ class TimePeriod(BaseModel):
 class DataOrigin(BaseModel):
     """Data source configuration"""
 
-    provider_group_id: Optional[List[int]] = Field(default=None, alias="providerGroupId")
+    provider_group_id: Optional[List[int]] = Field(
+        default=None, alias="providerGroupId"
+    )
     provider_id: Optional[List[int]] = Field(default=None, alias="providerId")
 
     @model_validator(mode="after")
     def validate_origin(self):
         if not self.provider_group_id and not self.provider_id:
-            raise ValueError("DataOrigin requires at least one of providerGroupId or providerId")
+            raise ValueError(
+                "DataOrigin requires at least one of providerGroupId or providerId"
+            )
         return self
 
 
@@ -204,7 +246,9 @@ class GraphQLQueryRequest(BaseModel):
     """Main GraphQL query request model"""
 
     metrics: List[MetricRequest]
-    time_period: TimePeriod | List[TimePeriod] = Field(default_factory=TimePeriod, alias="timePeriod")
+    time_period: TimePeriod | List[TimePeriod] = Field(
+        default_factory=TimePeriod, alias="timePeriod"
+    )
     data_origin: DataOrigin = Field(alias="dataOrigin")
 
     case_filter: Optional[FilterType] = Field(default=None, alias="caseFilter")
@@ -234,11 +278,17 @@ class GraphQLQueryGenerator:
         """Generate GraphQL query string from request model"""
 
         filter_args: List[str] = []
-        filter_args.append(GraphQLQueryGenerator._generate_time_period_arg(request.time_period))
-        filter_args.append(GraphQLQueryGenerator._generate_data_origin_arg(request.data_origin))
+        filter_args.append(
+            GraphQLQueryGenerator._generate_time_period_arg(request.time_period)
+        )
+        filter_args.append(
+            GraphQLQueryGenerator._generate_data_origin_arg(request.data_origin)
+        )
 
         if request.case_filter:
-            filter_args.append(f"caseFilter: {GraphQLQueryGenerator._generate_filter(request.case_filter)}")
+            filter_args.append(
+                f"caseFilter: {GraphQLQueryGenerator._generate_filter(request.case_filter)}"
+            )
 
         filter_string = ", ".join(filter_args)
 
@@ -285,7 +335,9 @@ class GraphQLQueryGenerator:
     def _generate_data_origin_arg(data_origin: DataOrigin) -> str:
         parts: List[str] = []
         if data_origin.provider_group_id:
-            provider_group_ids = ", ".join(str(id) for id in data_origin.provider_group_id)
+            provider_group_ids = ", ".join(
+                str(id) for id in data_origin.provider_group_id
+            )
             parts.append(f"providerGroupId: [{provider_group_ids}]")
         if data_origin.provider_id:
             provider_ids = ", ".join(str(id) for id in data_origin.provider_id)
@@ -298,7 +350,12 @@ class GraphQLQueryGenerator:
 
         match filter_obj:
             case LogicalFilter():
-                children_str = ", ".join([GraphQLQueryGenerator._generate_filter(child) for child in filter_obj.children])
+                children_str = ", ".join(
+                    [
+                        GraphQLQueryGenerator._generate_filter(child)
+                        for child in filter_obj.children
+                    ]
+                )
                 return f"""{{
                     node: {{
                         logicalOperator: {filter_obj.operator},
@@ -370,13 +427,44 @@ class GraphQLQueryGenerator:
         """Generate GraphQL field for a metric request"""
 
         alias = metric.alias or f"metric_{metric.metric_type.value}"
+        metric_type = _metric_data_type(metric.metric_type.value)
+        is_numeric_metric = metric_type == "numeric"
 
         kpi_fields = ["caseCount"]
 
         if metric.include_stats:
-            kpi_fields.extend(["percents", "normalizedPercents", "cohortSize", "normalizedCohortSize", "median", "mean", "variance", "confidenceIntervalMean", "confidenceIntervalMedian", "interquartileRange", "quartiles"])
+            # Enum/categorical metrics support only aggregate size/percent KPIs.
+            if is_numeric_metric:
+                kpi_fields.extend(
+                    [
+                        "percents",
+                        "normalizedPercents",
+                        "cohortSize",
+                        "normalizedCohortSize",
+                        "median",
+                        "mean",
+                        "variance",
+                        "confidenceIntervalMean",
+                        "confidenceIntervalMedian",
+                        "interquartileRange",
+                        "quartiles",
+                    ]
+                )
+            else:
+                kpi_fields.extend(
+                    [
+                        "percents",
+                        "normalizedPercents",
+                        "cohortSize",
+                        "normalizedCohortSize",
+                    ]
+                )
 
-        if metric.include_distribution and metric.distribution_options:
+        if (
+            is_numeric_metric
+            and metric.include_distribution
+            and metric.distribution_options
+        ):
             kpi_fields.append(f"""
                 d1: distribution(binCount: {metric.distribution_options.bin_count}) {{
                     edges
@@ -444,7 +532,9 @@ def create_sex_filter(sex: SexType, contains: bool = True) -> SexFilter:
     return SexFilter(sexType=sex, contains=contains)
 
 
-def create_stroke_filter(stroke_type: StrokeType, contains: bool = True) -> StrokeFilter:
+def create_stroke_filter(
+    stroke_type: StrokeType, contains: bool = True
+) -> StrokeFilter:
     """Create a stroke type filter"""
     return StrokeFilter(strokeType=stroke_type, contains=contains)
 

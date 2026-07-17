@@ -212,6 +212,27 @@ class MetricRequestFactoryTests(unittest.TestCase):
         self.assertEqual(metric_options_value.lower_boundary, 5)
         self.assertEqual(metric_options_value.upper_boundary, 130)
 
+    def test_enum_metric_does_not_request_distribution(self) -> None:
+        plan_chart = ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="SEX")])
+
+        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
+            plan_chart=plan_chart,
+            derive_defaults_fn=lambda metric: (20, 0, 200),
+            axis_from_meta_fn=lambda metric, lower, upper: (
+                ChartAxis(label=str(lower)),
+                ChartAxis(label=str(upper)),
+            ),
+        )
+
+        self.assertEqual(len(metric_requests), 1)
+        request = metric_requests[0]
+        self.assertFalse(request.include_distribution)
+        self.assertIsNone(request.distribution_options)
+        self.assertTrue(request.include_stats)
+        self.assertIsNone(derived_axes)
+        self.assertEqual(metric_data_origins, [None])
+        self.assertEqual(metric_scope_labels, [None])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -174,6 +174,16 @@ def _groupby_type_values() -> set[str]:
 _SUPPORTED_GROUPBY_FIELDS = _groupby_type_values()
 
 
+def _default_backend_sex_categories() -> List[SexType]:
+    categories: List[SexType] = []
+    for sex_value in list(SexType):
+        raw = str(getattr(sex_value, "value", sex_value)).upper()
+        if raw == "UNKNOWN":
+            continue
+        categories.append(sex_value)
+    return categories
+
+
 def is_server_groupby_supported(field: str) -> bool:
     return (field or "").upper() in _SUPPORTED_GROUPBY_FIELDS
 
@@ -214,7 +224,9 @@ class Dimension:
 
     def categories(self) -> Sequence[Any]:
         if isinstance(self.spec, GroupBySex):
-            return list(self.spec.categories or list(SexType))
+            if self.spec.categories:
+                return list(self.spec.categories)
+            return _default_backend_sex_categories()
         if isinstance(self.spec, GroupByStrokeType):
             return list(self.spec.categories or list(StrokeType))
         if isinstance(self.spec, GroupByTime):
@@ -490,6 +502,18 @@ class CompiledChartGrouping:
 
 def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     collected_groups: List[GroupBySpec] = list(coalesce(chart.group_by, []))
+    has_explicit_time_group = any(
+        isinstance(group_spec, GroupByTime) for group_spec in collected_groups
+    )
+    has_explicit_non_time_server_group = any(
+        not isinstance(group_spec, GroupByTime)
+        and _resolve_server_groupby_field(group_spec) is not None
+        for group_spec in collected_groups
+    )
+    if not has_explicit_time_group and not has_explicit_non_time_server_group:
+        # Default all generated charts to quarterly time grain when the plan
+        # does not explicitly request a time grouping.
+        collected_groups.append(GroupByTime(grain="QUARTER"))
 
     seen: set[GroupBySpec] = set()
     uniq_groups: List[GroupBySpec] = []

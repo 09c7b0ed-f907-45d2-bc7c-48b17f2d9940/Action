@@ -7,6 +7,19 @@ from src.domain.dto.charts.types import ChartAxis
 from src.domain.graphql.request import DataOrigin, MetricRequest
 from src.domain.graphql.ssot_enums import MetricType
 from src.domain.langchain import schema as S
+from src.shared.ssot_loader import get_metric_metadata
+
+
+_METRIC_METADATA = get_metric_metadata()
+
+
+def _metric_is_numeric(metric_code: str) -> bool:
+    meta = _METRIC_METADATA.get((metric_code or "").upper()) or {}
+    data_type = str(meta.get("data_type") or "").strip().lower()
+    # Default to numeric to preserve prior behavior when metadata is incomplete.
+    if not data_type:
+        return True
+    return data_type == "numeric"
 
 
 def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
@@ -90,7 +103,6 @@ def build_metric_requests(
     metric_scope_labels: List[Optional[str]] = []
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
     chart_type_upper = (plan_chart.chart_type or "").upper()
-    include_distribution = True
     include_bounds = chart_type_upper in {"LINE", "BAR"} and _has_value_domain_override(plan_chart)
 
     for metric in plan_chart.metrics:
@@ -100,13 +112,16 @@ def build_metric_requests(
         metric_scope_label = _metric_scope_label(metric)
 
         metric_request = MetricRequest(metricType=MetricType(metric.metric)).with_stats()
-        resolved_bins, resolved_min, resolved_max = _resolve_numeric_request_options(
-            plan_chart=plan_chart,
-            metric_code=metric.metric,
-            derive_defaults_fn=derive_defaults_fn,
-        )
+        metric_is_numeric = _metric_is_numeric(metric.metric)
+        include_distribution = metric_is_numeric
+        include_bounds_for_metric = metric_is_numeric and include_bounds
 
         if include_distribution:
+            resolved_bins, resolved_min, resolved_max = _resolve_numeric_request_options(
+                plan_chart=plan_chart,
+                metric_code=metric.metric,
+                derive_defaults_fn=derive_defaults_fn,
+            )
             metric_request = metric_request.with_distribution(
                 bin_count=resolved_bins,
                 lower=resolved_min,
@@ -116,7 +131,12 @@ def build_metric_requests(
             if len(plan_chart.metrics) == 1:
                 if chart_type_upper == "HISTOGRAM":
                     derived_axes = axis_from_meta_fn(metric.metric, resolved_min, resolved_max)
-        elif include_bounds:
+        elif include_bounds_for_metric:
+            resolved_bins, resolved_min, resolved_max = _resolve_numeric_request_options(
+                plan_chart=plan_chart,
+                metric_code=metric.metric,
+                derive_defaults_fn=derive_defaults_fn,
+            )
             metric_request = metric_request.with_bounds(lower=resolved_min, upper=resolved_max)
 
         metric_requests.append(metric_request)

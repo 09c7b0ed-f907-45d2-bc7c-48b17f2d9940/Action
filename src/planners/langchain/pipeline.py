@@ -24,7 +24,16 @@ from typing import (
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import AnalysisPlan
+from src.domain.langchain.schema import (
+    AnalysisPlan,
+    AndFilter,
+    GroupBySex,
+    GroupBySpec,
+    GroupByStrokeType,
+    NotFilter,
+    OrFilter,
+    SexFilter,
+)
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.util import env
@@ -32,7 +41,7 @@ from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
-_ENABLE_PLAN_CACHE = True
+_ENABLE_PLAN_CACHE = env.env_flag("PLANNER_ENABLE_CACHE", default=True)
 
 _FEWSHOT_TOKEN_WEIGHT = 1.0
 _FEWSHOT_ENTITY_KEY_WEIGHT = 6.0
@@ -66,7 +75,9 @@ _PLAN_CACHE_KEY_VERSION = "v3"
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
 llm: Any = create_chat_llm(temperature=0)
-logger.debug("[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-")
+logger.debug(
+    "[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-"
+)
 
 
 class PlannerTimeoutError(TimeoutError):
@@ -100,7 +111,9 @@ def _extract_text(response: Any) -> str:
 
 def _extract_json_block(text: str) -> str:
     candidate = text.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE)
+    fenced = re.match(
+        r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE
+    )
     if fenced:
         candidate = fenced.group(1).strip()
 
@@ -137,7 +150,9 @@ def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
 
         for gb_idx, item in enumerate(group_by_entries):
             if isinstance(item, dict) and not item:
-                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
+                raise ValueError(
+                    f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null."
+                )
 
 
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
@@ -174,7 +189,11 @@ def get_schema_description(model: Type[Any]) -> str:
                 # Recurse for nested models
                 outer = get_origin(field.annotation)
                 inner = get_args(field.annotation)
-                if outer in (list, List) and inner and hasattr(inner[0], "model_fields"):
+                if (
+                    outer in (list, List)
+                    and inner
+                    and hasattr(inner[0], "model_fields")
+                ):
                     lines.append(describe(inner[0], indent + 2))
                 elif hasattr(field.annotation, "model_fields"):
                     lines.append(describe(field.annotation, indent + 2))
@@ -192,7 +211,9 @@ _plan_cache_hits = 0
 _plan_cache_misses = 0
 _plan_cache_expired = 0
 _PLAN_CACHE_STATS_LOCK = Lock()
-_LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_event", default=None)
+_LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar(
+    "planner_last_cache_event", default=None
+)
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
@@ -202,7 +223,9 @@ def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
             return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
-            raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
+            raise PlannerTimeoutError(
+                f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s"
+            ) from exc
 
 
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
@@ -225,7 +248,9 @@ def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
         "intent_w": _FEWSHOT_INTENT_WEIGHT,
         "intent_keywords": _INTENT_KEYWORDS,
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def _cache_get(key: str) -> Optional[AnalysisPlan]:
@@ -382,8 +407,12 @@ def _intent_features(text: str) -> set[str]:
     return features
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> float:
-    query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
+def _match_score(
+    question: str, entities: Dict[str, Any], example: Dict[str, str]
+) -> float:
+    query_text = (
+        f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
+    )
     query_tokens = _tokenize(query_text)
     ex_text = example.get("user", "")
     ex_tokens = _tokenize(ex_text)
@@ -399,7 +428,10 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     entity_key_score = float(len(key_overlap)) * _FEWSHOT_ENTITY_KEY_WEIGHT
     entity_value_score = 0.0
     for key in key_overlap:
-        entity_value_score += float(len(query_entities[key] & example_entities[key])) * _FEWSHOT_ENTITY_VALUE_WEIGHT
+        entity_value_score += (
+            float(len(query_entities[key] & example_entities[key]))
+            * _FEWSHOT_ENTITY_VALUE_WEIGHT
+        )
 
     query_intent = _intent_features(query_text)
     example_intent = _intent_features(ex_text)
@@ -408,18 +440,37 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     return token_overlap_score + entity_key_score + entity_value_score + intent_score
 
 
-def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
+def _select_few_shot_examples(
+    question: str, entities: Dict[str, Any], max_items: int
+) -> List[Dict[str, str]]:
     if not few_shot_examples:
         return []
 
-    capped = max(1, min(max_items, len(few_shot_examples)))
-    scored = [(_match_score(question, entities, ex), idx, ex) for idx, ex in enumerate(few_shot_examples)]
+    question_text = (question or "").strip().lower()
+    is_update_request = question_text.startswith("previous chart plan")
+
+    # Avoid leaking update/carry-over behavior into one-shot requests.
+    candidate_examples = few_shot_examples
+    if not is_update_request:
+        filtered = [
+            ex
+            for ex in few_shot_examples
+            if "previous chart plan" not in ex.get("user", "").lower()
+        ]
+        if filtered:
+            candidate_examples = filtered
+
+    capped = max(1, min(max_items, len(candidate_examples)))
+    scored = [
+        (_match_score(question, entities, ex), idx, ex)
+        for idx, ex in enumerate(candidate_examples)
+    ]
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
 
     selected = [item[2] for item in scored[:capped]]
     # If all scores are zero, preserve deterministic default ordering from examples.py.
     if scored and scored[0][0] <= 0:
-        return few_shot_examples[:capped]
+        return candidate_examples[:capped]
     return selected
 
 
@@ -439,6 +490,176 @@ def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
             )
         )
     return "\n".join(parts)
+
+
+def _has_entity_value(entities: Dict[str, Any], key: str) -> bool:
+    value = entities.get(key)
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(
+            isinstance(item, str) and item.strip() for item in cast(List[Any], value)
+        )
+    return value is not None
+
+
+def _entities_request_stroke_groupby(entities: Dict[str, Any]) -> bool:
+    # NLU can encode this intent either as stroke_type or group_by=STROKE_TYPE.
+    if _has_entity_value(entities, "stroke_type"):
+        return True
+
+    group_by = entities.get("group_by")
+    if isinstance(group_by, str):
+        return group_by.strip().upper() == "STROKE_TYPE"
+    if isinstance(group_by, list):
+        for item in cast(List[Any], group_by):
+            if isinstance(item, str) and item.strip().upper() == "STROKE_TYPE":
+                return True
+    return False
+
+
+def _normalize_groupby_from_entities(
+    plan: AnalysisPlan, question: str, entities: Dict[str, Any]
+) -> AnalysisPlan:
+    # Guardrail: if user explicitly asked for stroke grouping and did not request sex,
+    # do not let a hallucinated/default GroupBySex override that intent.
+    if not _entities_request_stroke_groupby(entities):
+        return plan
+    if _has_entity_value(entities, "sex"):
+        return plan
+
+    question_text = (question or "").lower()
+    if "stroke" not in question_text:
+        return plan
+
+    charts = plan.charts or []
+    modified = False
+
+    for chart in charts:
+        group_by = chart.group_by or []
+        if not group_by:
+            continue
+
+        has_stroke = any(isinstance(item, GroupByStrokeType) for item in group_by)
+        has_sex = any(isinstance(item, GroupBySex) for item in group_by)
+        if has_stroke or not has_sex:
+            continue
+
+        new_group_by: List[GroupBySpec] = [
+            item for item in group_by if not isinstance(item, GroupBySex)
+        ]
+        new_group_by.append(GroupByStrokeType(categories=None))
+        chart.group_by = new_group_by
+        modified = True
+
+    if modified:
+        logger.info(
+            "[Planner] Corrected group_by from sex to stroke_type based on detected entities"
+        )
+    return plan
+
+
+def _question_has_explicit_sex_intent(question: str) -> bool:
+    text = (question or "").lower()
+    if not text:
+        return False
+    tokens = (
+        " sex",
+        "gender",
+        "male",
+        "female",
+        "men",
+        "women",
+        "non-binary",
+        "nonbinary",
+    )
+    return any(token in text for token in tokens)
+
+
+def _strip_sex_filter_node(node: Any) -> Optional[Any]:
+    if isinstance(node, SexFilter):
+        return None
+
+    if isinstance(node, AndFilter):
+        children: List[Any] = []
+        for child in node.and_:
+            cleaned = _strip_sex_filter_node(child)
+            if cleaned is not None:
+                children.append(cleaned)
+        if not children:
+            return None
+        if len(children) == 1:
+            return children[0]
+        return AndFilter(and_=children)
+
+    if isinstance(node, OrFilter):
+        children = []
+        for child in node.or_:
+            cleaned = _strip_sex_filter_node(child)
+            if cleaned is not None:
+                children.append(cleaned)
+        if not children:
+            return None
+        if len(children) == 1:
+            return children[0]
+        return OrFilter(or_=children)
+
+    if isinstance(node, NotFilter):
+        cleaned = _strip_sex_filter_node(node.not_)
+        if cleaned is None:
+            return None
+        return NotFilter(not_=cleaned)
+
+    return node
+
+
+def _enforce_explicit_sex_intent(
+    plan: AnalysisPlan, question: str, entities: Dict[str, Any]
+) -> AnalysisPlan:
+    # Deterministic guardrail: do not allow sex filter/grouping unless explicitly
+    # present in entities or clearly requested in user text.
+    if _has_entity_value(entities, "sex") or _question_has_explicit_sex_intent(
+        question
+    ):
+        return plan
+
+    charts = plan.charts or []
+    removed_groupby = 0
+    removed_filters = 0
+
+    for chart in charts:
+        group_by = chart.group_by or []
+        if group_by:
+            new_group_by: List[GroupBySpec] = [
+                item for item in group_by if not isinstance(item, GroupBySex)
+            ]
+            if len(new_group_by) != len(group_by):
+                removed_groupby += len(group_by) - len(new_group_by)
+            chart.group_by = new_group_by or None
+
+        before_filter = chart.filters
+        cleaned_filter = _strip_sex_filter_node(before_filter)
+        if before_filter is not None and cleaned_filter is None:
+            removed_filters += 1
+        elif (
+            before_filter is not None
+            and cleaned_filter is not None
+            and cleaned_filter is not before_filter
+        ):
+            removed_filters += 1
+        chart.filters = cleaned_filter
+
+    if removed_groupby or removed_filters:
+        logger.info(
+            "[Planner] Removed unintended sex dimensions",
+            extra={
+                "log_context": {
+                    "removed_groupby": removed_groupby,
+                    "removed_filters": removed_filters,
+                }
+            },
+        )
+    return plan
 
 
 plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
@@ -461,7 +682,8 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
             "Time grouping guidance: When group_by entity is quarter or quarterly, use GroupByTime with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR. Never emit an empty object for group_by entries."
-            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop group_by or other dimensions unless explicitly asked. "
+            "Stroke type guidance (deterministic): Resolve stroke_type intent in this order. 1) If the user explicitly asks to group or split by stroke type (for example: 'group by stroke type', 'split by stroke type', 'by stroke type'), use GroupByStrokeType. 2) If the user explicitly asks to filter to a stroke subtype (for example: 'only ischemic', 'only hemorrhagic', 'exclude ischemic'), use StrokeFilter. 3) If the user asks to show stroke type as the main subject (for example: 'show stroke type', 'show me a chart of stroke type', 'show stroke type instead'), treat stroke type as a metric and replace the previous metric in update flows. Mixed-intent rule: if grouping and filter are both requested, include both GroupByStrokeType and StrokeFilter. If grouping/filter language is absent, use metric fallback. Never emit empty group_by entries."
+            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show (metric) instead', only change the metric. If they say 'filter by (filter)', only add a filter. If the user asks for a new grouping dimension such as 'by quarter', 'monthly', 'group by stroke type', or 'group by sex', replace the existing group_by with the newly requested grouping unless the user explicitly asks to keep or combine both. Never silently keep an old grouping when the user names a different grouping. "
             "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
             "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter.",
         ),
@@ -558,7 +780,9 @@ def generate_analysis_plan(
 
         cache_key: Optional[str] = None
         if _ENABLE_PLAN_CACHE and not debug:
-            cache_key = _cache_key(question=question, entities=entities, language=language)
+            cache_key = _cache_key(
+                question=question, entities=entities, language=language
+            )
             cached_plan = _cache_get(cache_key)
             if cached_plan is not None:
                 _record_cache_event(True)
@@ -610,9 +834,13 @@ def generate_analysis_plan(
 
         for attempt in range(1, total_attempts + 1):
             if progress_cb is not None:
-                progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
+                progress_cb(
+                    f"Thinking about a plan (attempt {attempt}/{total_attempts})."
+                )
 
-            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
+            raw_result: Any = _invoke_with_timeout(
+                plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}"
+            )
             steps.append(
                 {
                     "step": f"plan_attempt_{attempt}",
@@ -623,6 +851,16 @@ def generate_analysis_plan(
 
             try:
                 result = _coerce_analysis_plan(raw_result)
+                result = _normalize_groupby_from_entities(
+                    plan=result,
+                    question=question,
+                    entities=entities,
+                )
+                result = _enforce_explicit_sex_intent(
+                    plan=result,
+                    question=question,
+                    entities=entities,
+                )
                 break
             except Exception as exc:
                 last_error = exc
@@ -635,10 +873,14 @@ def generate_analysis_plan(
                 )
                 if attempt >= total_attempts:
                     break
-                plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+                plan_inputs["reasoning"] = (
+                    f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+                )
 
         if result is None:
-            raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
+            raise ValueError(
+                f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts"
+            ) from last_error
 
         if debug:
             debug_payload: GeneratePlanDebug = {
