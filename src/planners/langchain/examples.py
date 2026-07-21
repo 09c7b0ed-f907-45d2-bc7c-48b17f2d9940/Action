@@ -117,6 +117,35 @@ def example_dtn_by_age_10y_buckets() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_by_warfarin_use() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["BAR"],
+        "group_by": ["BEFORE_ONSET_WARFARIN"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="BOOLEAN", field="BEFORE_ONSET_WARFARIN")],
+                ),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me DTN split by whether patients were on warfarin before onset\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_stroke_type_quarterly_past_2_years() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["STROKE_TYPE"],
@@ -995,6 +1024,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_grouped_by_sex_bare(),
         example_sex_distribution_bar(),
         example_dtn_by_age_10y_buckets(),
+        example_dtn_by_warfarin_use(),
     ]:
         examples.append(
             {
