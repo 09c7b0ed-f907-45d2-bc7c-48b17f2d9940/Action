@@ -940,6 +940,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_quarterly(),
         example_dtn_monthly(),
         example_dtn_yearly(),
+        example_stroke_type_quarterly_past_2_years(),
         example_dtn_ischemic_only_filter(),
         example_group_by_stroke_type_bare(),
         example_dtn_ischemic_and_female_filter(),
