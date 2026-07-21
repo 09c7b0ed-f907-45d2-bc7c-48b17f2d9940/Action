@@ -24,6 +24,7 @@ from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
 from src.planners.langchain.request_orchestrator import (
+    _PLANNER_MAX_RETRIES,
     orchestrate_visualization_request,
 )
 from src.shared import ssot_loader
@@ -52,7 +53,6 @@ _VISUALIZATION_PLAN_TYPE = "visualization_plan"
 _VISUALIZATION_GRAPHQL_QUERY_TYPE = "visualization_graphql_query"
 _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
 
-_PLANNER_MAX_RETRIES = 2
 _EXECUTOR_MAX_CONCURRENCY = 4
 
 

@@ -45,15 +45,28 @@ except Exception:
     _orchestrator_timeout_value = 10.0
 _ORCHESTRATOR_TIMEOUT_SECONDS = _orchestrator_timeout_value
 
+# Single source of truth for plan-generation retry count. Previously duplicated
+# as a separate constant in visualization_action.py, which is how the timeout
+# below drifted out of sync with it: the retry count only lived where the
+# retries actually got requested, not where the outer timeout that has to
+# survive them lived.
+_PLANNER_MAX_RETRIES = 2
+
 # Plan generation involves a reasoning step and can legitimately take longer than the
-# fast triage/decision call above. Its outer timeout must never be tighter than
-# pipeline.py's own per-attempt budget, or correct-but-slightly-slow plans get killed
-# before generate_analysis_plan ever has a chance to return them.
+# fast triage/decision call above. generate_analysis_plan (pipeline.py) retries up to
+# _PLANNER_MAX_RETRIES times, each bounded by its own _PLANNER_REQUEST_TIMEOUT_SECONDS
+# budget -- so this outer timeout must cover the full retry loop's worst case
+# (attempts * per-attempt budget), not just one attempt. It used to only account for
+# one, so on anything slow enough to need a retry, this outer wrapper killed the call
+# before generate_analysis_plan's own retry ever got a chance to run.
 _PLAN_GENERATION_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_PLAN_GENERATION_TIMEOUT_SECONDS", default="") or ""
 try:
     _plan_generation_timeout_value = max(1.0, float(_PLAN_GENERATION_TIMEOUT_RAW))
 except Exception:
-    _plan_generation_timeout_value = max(_ORCHESTRATOR_TIMEOUT_SECONDS, _PLANNER_REQUEST_TIMEOUT_SECONDS + 10.0)
+    _plan_generation_timeout_value = max(
+        _ORCHESTRATOR_TIMEOUT_SECONDS,
+        _PLANNER_REQUEST_TIMEOUT_SECONDS * (_PLANNER_MAX_RETRIES + 1) + 10.0,
+    )
 _PLAN_GENERATION_TIMEOUT_SECONDS = _plan_generation_timeout_value
 
 _ORCHESTRATOR_TEMPERATURE_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TEMPERATURE", default="0") or "0"
