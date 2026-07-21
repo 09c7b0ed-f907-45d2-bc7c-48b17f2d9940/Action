@@ -153,6 +153,12 @@ async def run_graphql_request(
         )
         return []
 
+    def _append_warning(message: str) -> None:
+        if request_warnings is None:
+            return
+        if message not in request_warnings:
+            request_warnings.append(message)
+
     metrics_payload = None
     if (x := resp) and (x := x.data) and (x := x.get_metrics) and (x := x.metrics):
         metrics_payload = x
@@ -174,21 +180,24 @@ async def run_graphql_request(
         )
 
     if not metrics_payload:
+        has_errors = bool(getattr(resp, "errors", None))
         logger.warning(
             "[plan_executor] GraphQL response had no metrics payload (groupBy=%s, labels=%s, hash=%s, has_errors=%s)",
             group_by_field,
             request_label,
             q_hash,
-            bool(getattr(resp, "errors", None)),
+            has_errors,
             extra=_runner_log_context(
                 event="request_runner.metrics_payload_missing",
                 outcome="degraded",
                 request_label=request_label,
                 query_hash=q_hash,
                 group_by_field=group_by_field,
-                has_errors=bool(getattr(resp, "errors", None)),
+                has_errors=has_errors,
             ),
         )
+        if has_errors:
+            _append_warning(f"No data returned for {request_label}; the backend returned validation errors.")
         return []
 
     metric_count = len(metrics_payload)
@@ -229,12 +238,6 @@ async def run_graphql_request(
                 skipped_rows += 1
 
     total_rows = kpi_group_count
-
-    def _append_warning(message: str) -> None:
-        if request_warnings is None:
-            return
-        if message not in request_warnings:
-            request_warnings.append(message)
 
     if not series:
         if total_rows > 0:

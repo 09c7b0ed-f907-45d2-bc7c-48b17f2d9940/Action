@@ -152,7 +152,7 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
         self.assertEqual(err.exception.reason, "unsupported_statistical_test_type")
         self.assertEqual(err.exception.code, "EXEC_STATS_UNSUPPORTED_TEST_TYPE")
 
-    def test_execute_plan_async_fails_when_any_scope_returns_no_data(self) -> None:
+    def test_execute_plan_async_drops_empty_scope_and_renders_the_rest(self) -> None:
         chart = AnalysisPlan(
             charts=[
                 ChartSpec(
@@ -244,6 +244,107 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             "estimate_query_count_for_plan",
             return_value=2,
         ):
+            response = asyncio.run(
+                plan_executor.execute_plan_async(
+                    plan=chart,
+                    user_sub="user-1",
+                    trace_id="trace-1",
+                )
+            )
+
+        self.assertEqual(len(response.charts), 1)
+        self.assertEqual(len(response.charts[0].series), 1)
+        self.assertEqual(response.charts[0].series[0].name, "DTN")
+        self.assertTrue(
+            any("Scope B" in warning for warning in response.warnings),
+            response.warnings,
+        )
+
+    def test_execute_plan_async_fails_when_every_scope_returns_no_data(self) -> None:
+        chart = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="LINE",
+                    metrics=[
+                        MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[1])),
+                        MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[2])),
+                    ],
+                    filters=AndFilter(
+                        and_=[
+                            DateFilter(operator="GE", value="2023-01-01"),
+                            DateFilter(operator="LE", value="2023-12-31"),
+                        ]
+                    ),
+                )
+            ]
+        )
+
+        first = plan_executor.RequestExecutionResult(
+            spec=plan_executor.RequestSpec(
+                req=GraphQLQueryRequest(
+                    metrics=[],
+                    timePeriod=TimePeriod(startDate="2023-01-01", endDate="2023-12-31"),
+                    dataOrigin=DataOrigin(providerId=[1]),
+                ),
+                label_parts=["A"],
+                include_metric_alias=False,
+                group_by_field=None,
+                add_time_period_labels=False,
+                scope_label="Scope A",
+            ),
+            series=[],
+        )
+        second = plan_executor.RequestExecutionResult(
+            spec=plan_executor.RequestSpec(
+                req=GraphQLQueryRequest(
+                    metrics=[],
+                    timePeriod=TimePeriod(startDate="2023-01-01", endDate="2023-12-31"),
+                    dataOrigin=DataOrigin(providerId=[2]),
+                ),
+                label_parts=["B"],
+                include_metric_alias=False,
+                group_by_field=None,
+                add_time_period_labels=False,
+                scope_label="Scope B",
+            ),
+            series=[],
+        )
+
+        async def _fake_execute_specs_concurrent(**kwargs):
+            return [first, second]
+
+        with patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart), patch.object(
+            plan_executor,
+            "build_metric_requests",
+            return_value=([], None, [None], [None]),
+        ), patch.object(
+            plan_executor,
+            "compile_chart_grouping",
+            return_value=CompiledChartGrouping(
+                dimensions=[],
+                batches=[
+                    CompiledBatch(
+                        server_groupby=None,
+                        filter_dims=[],
+                        combos_list=[tuple()],
+                        batched_time_enabled=False,
+                        batched_time_periods=[],
+                    )
+                ],
+            ),
+        ), patch.object(
+            plan_executor,
+            "build_primary_request_specs",
+            return_value=[first.spec, second.spec],
+        ), patch.object(
+            plan_executor,
+            "_execute_specs_concurrent",
+            side_effect=_fake_execute_specs_concurrent,
+        ), patch.object(
+            plan_executor,
+            "estimate_query_count_for_plan",
+            return_value=2,
+        ):
             with self.assertRaises(plan_executor.VisualizationExecutionError) as err:
                 asyncio.run(
                     plan_executor.execute_plan_async(
@@ -253,8 +354,7 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
                     )
                 )
 
-        self.assertEqual(err.exception.reason, "partial_scope_no_data")
-        self.assertEqual(err.exception.code, "EXEC_PARTIAL_SCOPE_NO_DATA")
+        self.assertEqual(err.exception.reason, "no_data")
 
     def test_execute_temporal_pair_mann_whitney_returns_query_results(self) -> None:
         test_a = StatisticalTestSpec(

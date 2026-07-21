@@ -1475,7 +1475,11 @@ async def execute_plan_async(
 
             sampled_period_override = _sampled_period_from_specs(primary_specs)
 
-            # Contract-first behavior: any requested scope with no rows is an execution failure.
+            # A scope that came back with no rows (a genuinely empty result, or a
+            # GraphQL partial error such as an unsupported filter value on just
+            # one scope) is dropped rather than failing the entire chart -- the
+            # other requested scopes still render. Only total failure (every
+            # scope empty) is fatal; see the `if not all_series` check below.
             empty_scope_labels = [
                 _request_scope_label(result.spec)
                 for result in request_results
@@ -1483,14 +1487,8 @@ async def execute_plan_async(
             ]
             if empty_scope_labels:
                 missing_labels = ", ".join(sorted(set(empty_scope_labels)))
-                raise VisualizationExecutionError(
-                    user_message=(
-                        "I could not return data for one or more requested scopes: "
-                        f"{missing_labels}. Please broaden the filters or adjust the scopes."
-                    ),
-                    reason="partial_scope_no_data",
-                    code="EXEC_PARTIAL_SCOPE_NO_DATA",
-                    trace_id=trace_id_resolved,
+                request_warnings.append(
+                    f"No data returned for: {missing_labels}. This scope was omitted from the chart."
                 )
 
             for warning_msg in request_warnings:
