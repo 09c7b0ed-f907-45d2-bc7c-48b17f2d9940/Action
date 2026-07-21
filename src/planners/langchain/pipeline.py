@@ -440,6 +440,7 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
+            "Hospital comparison guidance: a request to compare, group, or split a chart by hospital (e.g. 'DTN per quarter for my hospital vs Named Hospital', 'group by hospital') is NEVER a split -- there is no HOSPITAL split kind and none should be invented. Always express it as multiple metric entries (same metric, one per hospital) each with its own originScope, exactly like the multi-scope guidance above. This applies even when the user's wording uses 'group by' or 'split by' language for hospitals specifically. "
             "Numeric resolution guidance: put numeric range/bucketing controls at chart level in numericResolution (valueDomain/bucketing), never under metric objects. "
             "Use numericResolution.valueDomain for explicit lower/upper bounds and numericResolution.bucketing for bucketCount/bucketSize when the user asks for binning granularity. "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "

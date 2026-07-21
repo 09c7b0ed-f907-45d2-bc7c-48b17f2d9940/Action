@@ -15,7 +15,7 @@ from src.domain.graphql.request import (
     TimePeriod,
     default_time_bounds,
 )
-from src.domain.graphql.ssot_enums import GroupByType, Operator, SexType, StrokeType
+from src.domain.graphql.ssot_enums import Operator, SexType, StrokeType
 from src.domain.langchain import schema as S
 from src.domain.langchain.schema import (
     GroupByAge,
@@ -27,7 +27,7 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
-from src.shared.ssot_loader import get_sex_label, get_stroke_label
+from src.shared.ssot_loader import get_sex_label, get_ssot_items, get_stroke_label
 from src.util.coalesce import coalesce
 
 logger = logging.getLogger(__name__)
@@ -199,8 +199,20 @@ def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str
 
 
 def _groupby_type_values() -> set[str]:
+    # GroupByType.yml also catalogs group-by dimensions Action only supports
+    # via client-side synthesis (supported_by: internal, e.g. SEX_TYPE,
+    # STROKE_TYPE, time grains) alongside the handful the server actually
+    # accepts as a native groupBy parameter (supported_by: api). Only the
+    # latter belong in the server-side-supported set this function name
+    # promises -- otherwise a synthetic dimension gets mistaken for native and
+    # skips the per-category filter fan-out entirely.
     try:
-        return {str(member.value).upper() for member in GroupByType}
+        items = get_ssot_items("GroupByType.yml")
+        return {
+            str(item.get("canonical")).upper()
+            for item in items
+            if item.get("supported_by") == "api" and item.get("canonical")
+        }
     except Exception:
         logger.debug(
             "Failed to enumerate server-supported group-by fields; using empty supported-field set",

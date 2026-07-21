@@ -6,12 +6,13 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
+from functools import lru_cache
 from threading import Lock
 from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
+from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import _PLANNER_REQUEST_TIMEOUT_SECONDS, generate_analysis_plan
 from src.shared import ssot_loader
@@ -555,6 +556,227 @@ def _question_mentions_provider(question: str) -> bool:
     return any(hint in low for hint in _PROVIDER_HINTS)
 
 
+# Test names other than Mann-Whitney that SSOT/StatisticalTestType.yml has no entry
+# for at all -- not a partial gap, these tests have zero execution support anywhere
+# in the pipeline. Listed here purely so an explicit ask for one of them can be
+# rejected immediately with an accurate name, instead of silently reaching the
+# LLM planner, which has no valid schema representation for them either and
+# only fails after several retries with a generic, unhelpful message.
+_KNOWN_UNSUPPORTED_STAT_TEST_NAMES = (
+    "wilcoxon",
+    "student's t",
+    "paired t-test",
+    "paired t test",
+    "t-test",
+    "t test",
+    "chi-square",
+    "chi square",
+    "anova",
+    "kruskal-wallis",
+    "kruskal wallis",
+    "spearman",
+    "pearson",
+    "fisher's exact",
+    "fisher exact",
+    "kolmogorov",
+)
+
+
+def _detect_unsupported_statistical_test(question: str) -> Optional[str]:
+    question_norm = (question or "").strip().lower()
+    if not question_norm:
+        return None
+    if "mann-whitney" in question_norm or "mann whitney" in question_norm:
+        return None
+    for name in _KNOWN_UNSUPPORTED_STAT_TEST_NAMES:
+        if name in question_norm:
+            return name
+    return None
+
+
+def _validate_statistical_test_support(question: str) -> Optional[VisualizationRequestOutcome]:
+    unsupported_name = _detect_unsupported_statistical_test(question)
+    if unsupported_name is None:
+        return None
+
+    return VisualizationRequestOutcome(
+        decision="reject",
+        reason="unsupported_statistical_test",
+        message=(
+            f"I can't run a {unsupported_name} test yet -- Mann-Whitney U is the only "
+            "statistical test currently supported. Ask me to compare two cohorts with "
+            "a Mann-Whitney U test instead."
+        ),
+        clarification_type=None,
+        clarification_options=[],
+        missing_fields=[],
+    )
+
+
+# Raw group_by entity values the NLU lookup table recognises that map directly onto a
+# SplitSpec split kind rather than a time grain or a GroupByType.yml canonical field.
+_DIRECT_SPLIT_KIND_GROUP_BY_TOKENS = {"STROKE_TYPE", "SEX_TYPE", "SEX", "AGE", "NIHSS"}
+
+
+@lru_cache(maxsize=1)
+def _risk_factor_filter_terms() -> Dict[str, str]:
+    """Map lowercase risk-factor keywords -> a human label, sourced from the SSOT
+    RISK_FACTORS_TYPE enum (MetricType.yml) rather than a hand-maintained list.
+
+    RISK_FACTORS_TYPE is real and queryable as a metric, but confirmed (via the
+    real GraphQL API's schema.gql: EnumCaseFilter only covers
+    strokeType/sexType/arrivalMode) to have zero filter-input support -- a
+    permanent third-party backend limitation, not an Action-side schema gap.
+    This powers a fast, accurate rejection when a risk factor is mentioned as a
+    filter/cohort qualifier on some other metric, instead of letting the LLM
+    planner hallucinate an invalid filter and fail slowly with a generic message.
+    """
+    terms: Dict[str, str] = {}
+    try:
+        items = ssot_loader.get_ssot_items("MetricType.yml")
+    except Exception:
+        return terms
+
+    risk_factors = next((item for item in items if item.get("canonical") == "RISK_FACTORS_TYPE"), None)
+    if not risk_factors:
+        return terms
+
+    for entry in risk_factors.get("Enum") or []:
+        key = str(entry.get("key") or "").strip()
+        if not key:
+            continue
+        core = key
+        for prefix in ("risk_", "before_onset_"):
+            if core.startswith(prefix):
+                core = core[len(prefix) :]
+        label = core.replace("_", " ").strip()
+        if label and len(label) >= 3:
+            terms.setdefault(label.lower(), label)
+        for synonym in _flatten_synonym_block(entry.get("synonyms")):
+            cleaned = synonym.strip().lower()
+            for prefix in ("risk ", "history of "):
+                if cleaned.startswith(prefix):
+                    cleaned = cleaned[len(prefix) :]
+            if cleaned and len(cleaned) >= 3:
+                terms.setdefault(cleaned, label or cleaned)
+
+    return terms
+
+
+def _flatten_synonym_block(value: Any) -> List[str]:
+    out: List[str] = []
+    if isinstance(value, dict):
+        for localized in cast(Dict[str, Any], value).values():
+            if isinstance(localized, list):
+                out.extend(str(item) for item in cast(List[Any], localized) if isinstance(item, str) and item.strip())
+    return out
+
+
+def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, Any]) -> Optional[str]:
+    question_norm = (question or "").strip().lower()
+    if not question_norm:
+        return None
+
+    # If the user is actually asking about risk factors as the metric itself
+    # (e.g. "show risk factor distribution"), that's fully supported -- only
+    # flag when a *different* metric is requested and a risk factor shows up
+    # as an incidental qualifier ("...for patients with hypertension").
+    metric_values = [m.upper() for m in _extract_string_list(entities.get("metric"))]
+    if "RISK_FACTORS_TYPE" in metric_values:
+        return None
+
+    for term, label in _risk_factor_filter_terms().items():
+        # Leading boundary only (not trailing), so a plural like "smokers"
+        # still matches the SSOT term "smoker". Best-effort, not exhaustive --
+        # this is a fast path; anything it misses still falls through to the
+        # slower LLM plan-generation path, which fails safely via
+        # _build_empty_plan_clarification.
+        if re.search(r"\b" + re.escape(term), question_norm):
+            return label
+    return None
+
+
+def _validate_risk_factor_filter_support(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
+    label = _detect_unsupported_risk_factor_filter(question, entities)
+    if label is None:
+        return None
+
+    return VisualizationRequestOutcome(
+        decision="reject",
+        reason="unsupported_risk_factor_filter",
+        message=(
+            f"I can't filter by {label} yet -- risk factors like this are queryable as their own "
+            "metric, but the underlying data API has no way to use them as a filter on a different "
+            "metric. Ask me to chart risk factors directly instead, without combining it with another metric."
+        ),
+        clarification_type=None,
+        clarification_options=[],
+        missing_fields=[],
+    )
+
+
+def _validate_group_by_support(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
+    # Statistical-test plans compare cohorts via OriginScope/DataOrigin on each
+    # MetricSpec (see _build_deterministic_statistical_plan) -- they never use
+    # SplitSpec/group_by at all. NLU can still attach a group_by=HOSPITAL entity
+    # to "...against X hospital using a Mann-Whitney test" phrasing even though
+    # it's irrelevant there, so this check only applies to chart requests.
+    #
+    # _has_statistical_test_signal's keyword scan matches broadly on words like
+    # "compare", which also appears in plain chart requests ("compare my DTN
+    # per quarter with X hospital using a line chart") -- too loose to gate on
+    # here. A present chart_type entity is the precise signal: it means the
+    # request is unambiguously routed toward a chart, so group_by must still be
+    # validated even if the wording happens to also trip the stat-test scan.
+    has_chart_type = bool(_extract_string_list(entities.get("chart_type")))
+    if not has_chart_type and _has_statistical_test_signal(question, entities):
+        return None
+
+    raw_values = _extract_string_list(entities.get("group_by"))
+    if not raw_values:
+        return None
+
+    unsupported: List[str] = []
+    for raw in raw_values:
+        token = raw.strip().upper()
+        if not token:
+            continue
+        if token in TIME_INTERVALS:
+            continue
+        if token in _DIRECT_SPLIT_KIND_GROUP_BY_TOKENS:
+            continue
+        # HOSPITAL is intentionally not routed through SplitSpec -- there is no
+        # server-side or client-side split kind for it. It's handled entirely
+        # at the planning layer instead: the plan-generation prompt/examples
+        # teach the LLM to express hospital comparison as separate MetricSpec
+        # entries with their own originScope (see
+        # example_dtn_my_hospital_vs_named_hospital_quarterly_line), which
+        # resolve_plan_metric_origins already executes generically for both
+        # charts and statistical tests. Nothing to validate here.
+        if token == "HOSPITAL":
+            continue
+        if ssot_loader.resolve_groupby_canonical(token) is not None:
+            continue
+        unsupported.append(raw.strip())
+
+    if not unsupported:
+        return None
+
+    names = ", ".join(sorted(set(unsupported)))
+    return VisualizationRequestOutcome(
+        decision="clarify",
+        reason="unsupported_group_by_dimension",
+        message=(
+            f"I can't group or split a chart by {names} yet. I can group by stroke type, "
+            "sex, time period (month/quarter/year), EMS prenotification, first contact "
+            "place, IVT department, or INR mode."
+        ),
+        clarification_type="analysis_plan",
+        clarification_options=[],
+        missing_fields=[],
+    )
+
+
 def _validate_statistical_entity_readiness(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
     if not _has_statistical_test_signal(question, entities):
         return None
@@ -921,6 +1143,30 @@ def orchestrate_visualization_request(
         try:
             report("Analyzing request intent and feasibility")
             logger.info("Orchestrator input - question: %s, entities: %s", question, entities)
+
+            stat_test_support_validation = _validate_statistical_test_support(question)
+            if stat_test_support_validation is not None:
+                logger.info(
+                    "Orchestrator rejection: %s",
+                    stat_test_support_validation.reason,
+                )
+                return stat_test_support_validation
+
+            risk_factor_filter_validation = _validate_risk_factor_filter_support(question, entities)
+            if risk_factor_filter_validation is not None:
+                logger.info(
+                    "Orchestrator rejection: %s",
+                    risk_factor_filter_validation.reason,
+                )
+                return risk_factor_filter_validation
+
+            group_by_validation = _validate_group_by_support(question, entities)
+            if group_by_validation is not None:
+                logger.info(
+                    "Orchestrator clarification: %s",
+                    group_by_validation.reason,
+                )
+                return group_by_validation
 
             stats_entity_validation = _validate_statistical_entity_readiness(question, entities)
             if stats_entity_validation is not None:

@@ -846,6 +846,52 @@ def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_my_hospital_vs_named_hospital_quarterly_line() -> Tuple[str, str]:
+    # Chart-level hospital comparison, combined with a time split (quarterly
+    # trend). There is no HOSPITAL split kind -- hospital comparison must
+    # always be expressed as separate metric entries with their own
+    # originScope, same as the bare hospital-vs-scope examples above, even
+    # when the request also asks for time grouping in the same chart.
+    detected_entities = {
+        "hospital_scope_reference": ["my"],
+        "metric": ["DTN"],
+        "hospital_name": ["Army Alhama de Murcia Hospital"],
+        "chart_type": ["LINE"],
+        "group_by": ["QUARTER", "HOSPITAL"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="TREND", measure="MEDIAN", time_grain="QUARTER"),
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                        originScope=OriginScopeSpec(
+                            scopeType="mine", label="My hospital"
+                        ),
+                    ),
+                    MetricSpec(
+                        metric="DTN",
+                        originScope=OriginScopeSpec(
+                            scopeType="provider_name",
+                            value="Army Alhama de Murcia Hospital",
+                            label="Army Alhama de Murcia Hospital",
+                        ),
+                    ),
+                ],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nCompare my dtn per quarter with army alhama de murcia hospital using a line chart\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["DTN"],
@@ -935,6 +981,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_statistical_test_dtn_by_quarter(),
         example_dtn_my_hospital_vs_country_average(),
         example_dtn_my_hospital_vs_provider_group_name(),
+        example_dtn_my_hospital_vs_named_hospital_quarterly_line(),
         example_mw_my_hospital_vs_national(),
         example_dtn_year_filter(),
         example_dtn_quarterly(),
