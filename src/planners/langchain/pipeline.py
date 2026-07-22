@@ -27,6 +27,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
+from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
 from src.util.logging_utils import bind_current_context, log_context
 
@@ -367,7 +368,15 @@ def _intent_features(text: str) -> set[str]:
     return features
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> float:
+class MatchScoreBreakdown(TypedDict):
+    token_overlap: float
+    entity_key_overlap: float
+    entity_value_overlap: float
+    intent_overlap: float
+    total: float
+
+
+def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> MatchScoreBreakdown:
     query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
     query_tokens = _tokenize(query_text)
     ex_text = example.get("user", "")
@@ -390,7 +399,13 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     example_intent = _intent_features(ex_text)
     intent_score = float(len(query_intent & example_intent)) * _FEWSHOT_INTENT_WEIGHT
 
-    return token_overlap_score + entity_key_score + entity_value_score + intent_score
+    return {
+        "token_overlap": token_overlap_score,
+        "entity_key_overlap": entity_key_score,
+        "entity_value_overlap": entity_value_score,
+        "intent_overlap": intent_score,
+        "total": token_overlap_score + entity_key_score + entity_value_score + intent_score,
+    }
 
 
 def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
@@ -398,7 +413,7 @@ def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items
         return []
 
     capped = max(1, min(max_items, len(few_shot_examples)))
-    scored = [(_match_score(question, entities, ex), idx, ex) for idx, ex in enumerate(few_shot_examples)]
+    scored = [(_match_score(question, entities, ex)["total"], idx, ex) for idx, ex in enumerate(few_shot_examples)]
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
 
     selected = [item[2] for item in scored[:capped]]
@@ -406,6 +421,24 @@ def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items
     if scored and scored[0][0] <= 0:
         return few_shot_examples[:capped]
     return selected
+
+
+def score_few_shot_examples(question: str, entities: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Scores every loaded few-shot example against a candidate query, using
+    the exact same _match_score/_select_few_shot_examples the live planner
+    runs -- exposed via a debug HTTP route (see rasa_sdk_plugins) so "why
+    wasn't my example picked" has a real answer instead of a guess at the
+    scoring weights. Reuses _select_few_shot_examples itself for the
+    "selected" flag rather than re-deriving the all-zero-scores tie-break
+    rule here, so the preview can't drift out of sync with actual selection.
+    """
+    selected_names = {ex["name"] for ex in _select_few_shot_examples(question, entities, _MAX_FEW_SHOTS)}
+    scored = [
+        {"name": ex["name"], "selected": ex["name"] in selected_names, **_match_score(question, entities, ex)}
+        for ex in few_shot_examples
+    ]
+    scored.sort(key=lambda item: item["total"], reverse=True)
+    return scored
 
 
 def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
@@ -428,32 +461,7 @@ def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
 
 plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
     [
-        (
-            "system",
-            "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
-            "For every chart, you MUST include a semantics object with intent, measure, and any relevant splits/time semantics. "
-            "Charts must not include planner-facing group_by; use semantics.splits and semantics.time instead. "
-            "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
-            "Use the reasoning and prior examples. Place detected entities into metrics, semantics, and filters. "
-            "When scope is semantic (my hospital, hospital name, provider-group name, country average, all accessible), prefer metric-level originScope instead of dataOrigin. "
-            "Use originScope.scopeType from: mine, provider_name, provider_group_name, country_code, country_average, all_accessible, provider_id, provider_group_id. "
-            "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
-            "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
-            "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
-            "Hospital comparison guidance: a request to compare, group, or split a chart by hospital (e.g. 'DTN per quarter for my hospital vs Named Hospital', 'group by hospital') is NEVER a split -- there is no HOSPITAL split kind and none should be invented. Always express it as multiple metric entries (same metric, one per hospital) each with its own originScope, exactly like the multi-scope guidance above. This applies even when the user's wording uses 'group by' or 'split by' language for hospitals specifically. "
-            "Numeric resolution guidance: put numeric range/bucketing controls at chart level in numericResolution (valueDomain/bucketing), never under metric objects. "
-            "Use numericResolution.valueDomain for explicit lower/upper bounds and numericResolution.bucketing for bucketCount/bucketSize when the user asks for binning granularity. "
-            "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
-            "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple semantic splits. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
-            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
-            "Time grouping guidance: When the user asks for quarter or quarterly, use semantics.time with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR."
-            "Time window guidance: When semantics.time.grain is set, also populate semantics.time.window whenever the user gives any span cue. For relative phrases ('the past 2 years', 'last 6 months', 'last 4 quarters'), use a TimeWindow with last_n and unit (DAY, WEEK, BIWEEK, MONTH, QUARTER, YEAR). For an explicit absolute range ('from 2023-01-01 to 2023-12-31'), use a TimeRange with start_date/end_date instead, and do not also add a redundant DateFilter for that same range. If the user gives grain with no span cue at all, omit window — a sensible default range is applied automatically. Never invent a start/end date yourselves; only build TimeRange from dates the user actually stated."
-            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, semantics, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop semantics unless explicitly asked. "
-            "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
-            "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter."
-            "Age/NIHSS bucket grouping guidance: When the user asks to group/split by age or NIHSS score in fixed-size buckets (e.g. 'age in 10-year buckets', 'group by NIHSS in bands of 5'), use a split with kind='AGE' or kind='NIHSS' and populate split.buckets with explicit {{min, max}} integer ranges covering the plausible domain (age: 0-100; NIHSS: 0-42), spaced by the requested bucket size. split.buckets is required for AGE/NIHSS splits — never omit it and never use split.categories for these two kinds. This grouping is computed client-side via per-bucket filters, not a backend groupBy field.",
-        ),
+        ("system", load_prompt_text("plan_system", expected_variables=frozenset({"language"}))),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),

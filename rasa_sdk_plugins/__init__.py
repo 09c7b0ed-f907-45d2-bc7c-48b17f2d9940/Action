@@ -38,3 +38,21 @@ def attach_sanic_app_extensions(app: Sanic) -> None:
             "ssotVersion": _read_env("ACTION_SSOT_VERSION") or _read_env("SSOT_VERSION"),
         }
         return response.json(body, status=200)
+
+    @app.post("/debug/fewshot-relevance")
+    async def fewshot_relevance(request) -> HTTPResponse:
+        # Imported here rather than at module level: this plugin module is
+        # discovered by rasa_sdk's pluggy machinery separately from (and
+        # potentially before) the custom-actions package, so importing the
+        # heavier langchain pipeline eagerly at plugin-load time would couple
+        # two independent loading orders together for no benefit.
+        from src.planners.langchain.pipeline import score_few_shot_examples
+
+        body = request.json or {}
+        question = body.get("question")
+        entities = body.get("entities")
+        if not isinstance(question, str) or not isinstance(entities, dict):
+            return response.json({"error": "Body must include question (string) and entities (object)."}, status=400)
+
+        scored = score_few_shot_examples(question, entities)
+        return response.json({"scored": scored}, status=200)

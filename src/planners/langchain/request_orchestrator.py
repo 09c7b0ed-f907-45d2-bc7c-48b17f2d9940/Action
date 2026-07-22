@@ -15,6 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import _PLANNER_REQUEST_TIMEOUT_SECONDS, generate_analysis_plan
+from src.planners.langchain.prompt_loader import load_prompt_text
 from src.shared import ssot_loader
 from src.util import env as env_util
 from src.util.logging_utils import bind_current_context, log_context
@@ -144,33 +145,7 @@ _PROVIDER_HINTS = (
 
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
     [
-        (
-            "system",
-            """
-You are the triage stage for a clinical analytics visualization assistant.
-Return strict JSON only:
-{{
-  "decision": "proceed" | "clarify" | "reject",
-  "reason": "short_snake_case_reason",
-  "missing_fields": string[] | null,
-  "clarification_type": string | null,
-  "clarification_options": string[] | null,
-  "message": string | null
-}}
-
-Rules:
-- For chart requests, required fields are metric and chart_type.
-- For statistical-test-only requests, required fields are metric and statistical_test_type; chart_type is optional and should not trigger clarification.
-- If required fields for the detected intent are present, return decision="proceed" and message=null.
-- If one required field is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
-- Never reject a metric because you judge it numeric-incompatible with the requested chart_type (e.g. a categorical/Enum metric like sex or stroke_type charted as a bar/pie/line). Any metric present in ENTITIES_JSON or VALID_METRIC_CANDIDATES_JSON is a valid metric for any chart_type at this stage — chart/metric compatibility is decided by the planning stage, not triage.
-- If out of scope, return decision="reject" with a short message.
-- Never ask the user to clarify or provide time_scope, time_range, grouping_dimension, sex, or stroke_type — these are optional and should be accepted if present, not rejected.
-- Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
-- When a date entity contains only a year (e.g. "2026"), expand it to a full-year range: two DateFilters — operator GE with value "{{year}}-01-01" AND operator LE with value "{{year}}-12-31".
-- Do not include markdown or prose outside JSON.
-        """.strip(),
-        ),
+        ("system", load_prompt_text("decision_system")),
         (
             "user",
             "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}\nVALID_CHART_TYPES_JSON: {chart_types_json}",
