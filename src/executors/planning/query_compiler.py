@@ -7,6 +7,7 @@ from itertools import product
 from typing import Any, List, Optional, Sequence, Tuple
 
 from src.domain.graphql.request import (
+    BooleanFilter,
     DateFilter,
     IntegerFilter,
     LogicalFilter,
@@ -27,7 +28,7 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
-from src.shared.ssot_loader import get_sex_label, get_ssot_items, get_stroke_label
+from src.shared.ssot_loader import get_boolean_label, get_sex_label, get_ssot_items, get_stroke_label
 from src.util.coalesce import coalesce
 
 logger = logging.getLogger(__name__)
@@ -426,6 +427,8 @@ class Dimension:
             return list(self.spec.buckets)
         if isinstance(self.spec, GroupByNIHSS):
             return list(self.spec.buckets)
+        if isinstance(self.spec, GroupByBoolean):
+            return list(self.spec.values) if self.spec.values else [True, False]
         return []
 
     def label_for(self, cat: Any) -> str:
@@ -439,6 +442,8 @@ class Dimension:
             return get_stroke_label(str(raw).upper())
         if isinstance(self.spec, (GroupByAge, GroupByNIHSS)):
             return f"{cat.min}-{cat.max}"
+        if isinstance(self.spec, GroupByBoolean):
+            return f"{get_boolean_label(self.spec.boolean_type)}: {'Yes' if cat else 'No'}"
         if isinstance(self.spec, GroupByCanonicalField):
             return self.spec.field
         if isinstance(self.spec, GroupByTime):
@@ -480,6 +485,8 @@ class Dimension:
                     ),
                 ],
             )
+        if isinstance(self.spec, GroupByBoolean):
+            return BooleanFilter(property=self.spec.boolean_type, value=bool(cat))
         if isinstance(self.spec, GroupByTime):
             try:
                 start, end = cat

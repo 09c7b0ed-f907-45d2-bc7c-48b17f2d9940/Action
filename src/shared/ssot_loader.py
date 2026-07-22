@@ -729,6 +729,10 @@ def get_stroke_label(value: str) -> str:
     return _label_from_simple_type_file("StrokeType.yml", value) or value
 
 
+def get_boolean_label(value: str) -> str:
+    return _label_from_simple_type_file("BooleanType.yml", value) or value
+
+
 def resolve_sex(value: str) -> Optional[str]:
     """Resolve a sex value (canonical or synonym) to SexType canonical value."""
     return _resolve_canonical_value("SexType.yml", value)
