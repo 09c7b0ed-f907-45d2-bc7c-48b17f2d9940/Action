@@ -117,6 +117,35 @@ def example_dtn_by_age_10y_buckets() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_by_nihss_severity() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["BAR"],
+    }
+    buckets = [Bucket(min=0, max=10), Bucket(min=10, max=25)]
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                semantics=_semantics(
+                    metric="DTN",
+                    intent="COMPARISON",
+                    measure="MEDIAN",
+                    splits=[SplitSpec(kind="NIHSS", buckets=buckets)],
+                ),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a bar chart of DTN grouped by NIHSS score, split into 0-10 and 10-25\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_dtn_by_warfarin_use() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["DTN"],
@@ -1025,6 +1054,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_sex_distribution_bar(),
         example_dtn_by_age_10y_buckets(),
         example_dtn_by_warfarin_use(),
+        example_dtn_by_nihss_severity(),
     ]:
         examples.append(
             {
