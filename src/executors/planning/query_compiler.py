@@ -422,6 +422,113 @@ class Dimension:
                 buckets = [_year_bucket(y) for y in range(start.year, end.year + 1)]
                 return buckets
 
+            from datetime import timedelta
+
+            if isinstance(window, S.TimeWindow) and grain == "DAY":
+                unit = str(window.unit).upper()
+                day_span = 0
+                if unit == "DAY":
+                    day_span = window.last_n
+                elif unit == "WEEK":
+                    day_span = window.last_n * 7
+                elif unit == "BIWEEK":
+                    day_span = window.last_n * 14
+
+                if day_span <= 0:
+                    return []
+
+                today = date.today()
+                buckets = [(today - timedelta(days=i), today - timedelta(days=i)) for i in range(day_span)]
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "DAY":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                buckets = []
+                cur = start
+                while cur <= end:
+                    buckets.append((cur, cur))
+                    cur = cur + timedelta(days=1)
+                return buckets
+
+            if isinstance(window, S.TimeWindow) and grain == "WEEK":
+                unit = str(window.unit).upper()
+                week_span = 0
+                if unit == "WEEK":
+                    week_span = window.last_n
+                elif unit == "BIWEEK":
+                    week_span = window.last_n * 2
+
+                if week_span <= 0:
+                    return []
+
+                today = date.today()
+                current_week_start = today - timedelta(days=today.weekday())
+                buckets = []
+                for i in range(week_span):
+                    week_start = current_week_start - timedelta(days=7 * i)
+                    buckets.append((week_start, week_start + timedelta(days=6)))
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "WEEK":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                week_start = start - timedelta(days=start.weekday())
+                buckets = []
+                cur = week_start
+                while cur <= end:
+                    buckets.append((cur, cur + timedelta(days=6)))
+                    cur = cur + timedelta(days=7)
+                return buckets
+
+            if isinstance(window, S.TimeWindow) and grain == "BIWEEK":
+                unit = str(window.unit).upper()
+                biweek_span = 0
+                if unit == "BIWEEK":
+                    biweek_span = window.last_n
+                elif unit == "WEEK":
+                    biweek_span = max(1, window.last_n // 2)
+
+                if biweek_span <= 0:
+                    return []
+
+                today = date.today()
+                current_week_start = today - timedelta(days=today.weekday())
+                buckets = []
+                for i in range(biweek_span):
+                    period_start = current_week_start - timedelta(days=14 * i)
+                    buckets.append((period_start, period_start + timedelta(days=13)))
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "BIWEEK":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                period_start = start - timedelta(days=start.weekday())
+                buckets = []
+                cur = period_start
+                while cur <= end:
+                    buckets.append((cur, cur + timedelta(days=13)))
+                    cur = cur + timedelta(days=14)
+                return buckets
+
             return []
         if isinstance(self.spec, GroupByAge):
             return list(self.spec.buckets)
