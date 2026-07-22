@@ -1,0 +1,81 @@
+{
+  "category": "splits",
+  "user_utterance": "show DTN per quarter for ischemic patients grouped by sex",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "LINE"
+    ],
+    "group_by": [
+      "QUARTER"
+    ],
+    "stroke_type": [
+      "ISCHEMIC"
+    ],
+    "sex": [
+      "MALE",
+      "FEMALE"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "MEAN",
+            "percentile": null
+          },
+          "splits": [
+            {
+              "kind": "SEX",
+              "field": null,
+              "categories": [
+                "MALE",
+                "FEMALE"
+              ],
+              "buckets": null
+            }
+          ],
+          "time": {
+            "grain": "QUARTER",
+            "window": null,
+            "include_partial": null
+          },
+          "x_axis": {
+            "role": "TIME",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEAN",
+            "grain": null
+          }
+        },
+        "filters": {
+          "type": "StrokeFilter",
+          "value": "ISCHEMIC"
+        },
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "category": "basic",
+  "user_utterance": "Show me a histogram of DTN with 12 bins between 0 and 180",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "HISTOGRAM"
+    ],
+    "bucket_count": [
+      12
+    ],
+    "range": [
+      "0-180"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "HISTOGRAM",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": null,
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": {
+          "value_domain": {
+            "lower_bound": 0,
+            "upper_bound": 180
+          },
+          "bucketing": {
+            "bucket_count": 12,
+            "bucket_size": null
+          }
+        }
+      }
+    ],
+    "statistical_tests": null
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "category": "splits",
+  "user_utterance": "Show DTN in one graph split by sex and stroke type",
+  "entities_detected": {
+    "sex": [
+      "MALE",
+      "FEMALE"
+    ],
+    "stroke_type": [
+      "ISCHEMIC",
+      "INTRACEREBRAL_HEMORRHAGE"
+    ],
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "LINE"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN",
+            "percentile": null
+          },
+          "splits": [
+            {
+              "kind": "SEX",
+              "field": null,
+              "categories": [
+                "MALE",
+                "FEMALE"
+              ],
+              "buckets": null
+            },
+            {
+              "kind": "STROKE_TYPE",
+              "field": null,
+              "categories": [
+                "ISCHEMIC",
+                "INTRACEREBRAL_HEMORRHAGE"
+              ],
+              "buckets": null
+            }
+          ],
+          "time": null,
+          "x_axis": {
+            "role": "CATEGORY",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEDIAN",
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}
