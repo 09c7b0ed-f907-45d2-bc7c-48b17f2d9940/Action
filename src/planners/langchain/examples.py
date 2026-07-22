@@ -2,6 +2,7 @@ import json
 from typing import Dict, List, Tuple
 
 from src.domain.langchain.schema import (
+    AgeFilter,
     AnalysisSemanticsSpec,
     AnalysisPlan,
     AndFilter,
@@ -11,6 +12,7 @@ from src.domain.langchain.schema import (
     DateFilter,
     MeasureSemanticsSpec,
     MetricSpec,
+    NIHSSFilter,
     NumericResolutionSpec,
     OriginScopeSpec,
     SexFilter,
@@ -348,6 +350,48 @@ def example_dtn_females_only_filter() -> Tuple[str, str]:
     )
     user = (
         "USER_UTTERANCE:\nShow me a line graph of DTN for females only\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_admission_nihss_age_over_60_filter() -> Tuple[str, str]:
+    detected_entities = {"age": ["60"], "metric": ["ADMISSION_NIHSS"], "chart_type": ["BAR"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                semantics=_semantics(metric="ADMISSION_NIHSS", intent="DISTRIBUTION", measure="DISTRIBUTION"),
+                filters=AgeFilter(operator="GT", value=60),
+                metrics=[MetricSpec(metric="ADMISSION_NIHSS")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nmake me an admission nihss of only patients older than 60 years\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_nihss_above_10_filter() -> Tuple[str, str]:
+    detected_entities = {"metric": ["DTN"], "chart_type": ["LINE"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                semantics=_semantics(metric="DTN", intent="DISTRIBUTION", measure="DISTRIBUTION"),
+                filters=NIHSSFilter(operator="GT", value=10),
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me DTN for patients with NIHSS score above 10\n\nENTITIES_DETECTED(JSON):\n"
         + json.dumps(detected_entities)
     )
     assistant = plan.model_dump_json(indent=2)
@@ -1055,6 +1099,8 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_by_age_10y_buckets(),
         example_dtn_by_warfarin_use(),
         example_dtn_by_nihss_severity(),
+        example_admission_nihss_age_over_60_filter(),
+        example_dtn_nihss_above_10_filter(),
     ]:
         examples.append(
             {
