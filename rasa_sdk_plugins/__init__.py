@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 import pluggy
@@ -7,6 +8,13 @@ from sanic import Sanic, response
 from sanic.response import HTTPResponse
 
 hookimpl = pluggy.HookimplMarker("rasa_sdk")
+
+# Captured once, at plugin-module import time (which happens once per action
+# server process, at startup) -- lets CVaLab tell whether few-shot
+# examples/prompts on disk have been edited since this process started, since
+# both are only ever read once at import time and won't take effect until a
+# restart either way.
+_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 
 def _read_env(name: str) -> Optional[str]:
@@ -36,6 +44,7 @@ def attach_sanic_app_extensions(app: Sanic) -> None:
             "llmProvider": _read_env("LLM_PROVIDER"),
             "promptVersion": _read_env("ACTION_PROMPT_VERSION"),
             "ssotVersion": _read_env("ACTION_SSOT_VERSION") or _read_env("SSOT_VERSION"),
+            "startedAt": _STARTED_AT,
         }
         return response.json(body, status=200)
 
