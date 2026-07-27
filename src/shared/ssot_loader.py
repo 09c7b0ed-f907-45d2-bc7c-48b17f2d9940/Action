@@ -191,19 +191,19 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
         # Display name: prefer first synonym if available
         if synonyms:
             meta["display_name"] = synonyms[0]
-
         # Numeric-specific (nested or flat)
-        numeric = item.get("numeric")
+        numeric = _ci_get(item, "numeric")
         if isinstance(numeric, dict):
             numeric = cast(Dict[str, Any], numeric)
             # Preserve nested block
             meta["numeric"] = numeric
             # Promote known keys for compatibility
             for k in ("unit", "range_min", "range_max", "distribution_default_buckets"):
-                if k in numeric and k not in meta:
-                    meta[k] = numeric[k]
+                value = _ci_get(numeric, k)
+                if value is not None and k not in meta:
+                    meta[k] = value
             # If a specific field is provided, synthesize properties if absent
-            field = numeric.get("field")
+            field = _ci_get(numeric, "field")
             if isinstance(field, str) and field and "properties" not in meta:
                 meta["properties"] = [field]
         # Also support legacy flat keys if present (pre-nested YAML)
@@ -727,6 +727,10 @@ def get_sex_label(value: str) -> str:
 
 def get_stroke_label(value: str) -> str:
     return _label_from_simple_type_file("StrokeType.yml", value) or value
+
+
+def get_boolean_label(value: str) -> str:
+    return _label_from_simple_type_file("BooleanType.yml", value) or value
 
 
 def resolve_sex(value: str) -> Optional[str]:

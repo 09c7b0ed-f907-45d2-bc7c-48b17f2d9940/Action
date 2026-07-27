@@ -321,13 +321,43 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
     return f"{display} ({unit})" if unit else display
 
 
+def _uses_distribution_axes(
+    chart_type_upper: str,
+    dimensions: List[Dimension],
+    series: List[ChartSeries],
+) -> bool:
+    if chart_type_upper == ChartType.HISTOGRAM.value:
+        return True
+
+    if chart_type_upper != ChartType.BAR.value or dimensions:
+        return False
+
+    has_points = False
+    for item in series:
+        for point in item.data:
+            has_points = True
+            if _coerce_float(point.x) is None or _coerce_float(point.y) is None:
+                return False
+
+    return has_points
+
+
 def _derive_axes_from_dimensions(
     plan_chart: S.ChartSpec,
     dimensions: List[Dimension],
     chart_type_upper: str,
+    series: List[ChartSeries],
 ) -> tuple[Optional[ChartAxis], Optional[ChartAxis]]:
     if chart_type_upper in {ChartType.PIE.value, ChartType.RADAR.value}:
         return None, None
+
+    if _uses_distribution_axes(chart_type_upper, dimensions, series):
+        x_axis = ChartAxis(
+            label=_metric_value_axis_label(plan_chart),
+            type=ChartAxis.AxisType.LINEAR,
+        )
+        y_axis = ChartAxis(label="Cases", type=ChartAxis.AxisType.LINEAR)
+        return x_axis, y_axis
 
     primary = _primary_dimension_for_axes(dimensions)
     if primary is not None:
@@ -429,6 +459,7 @@ def build_chart_dto(
             plan_chart=plan_chart,
             dimensions=dimensions,
             chart_type_upper=chart_type_upper,
+            series=series,
         )
 
     metadata = ChartMetadata(
