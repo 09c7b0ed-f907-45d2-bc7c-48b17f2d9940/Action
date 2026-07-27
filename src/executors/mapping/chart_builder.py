@@ -134,28 +134,18 @@ def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -
         if isinstance(node, S.AgeFilter):
             operator = _format_operator(str(getattr(node, "operator", "")))
             value = getattr(node, "value", "")
-            return (
-                f"age {operator} {value:g}"
-                if isinstance(value, (int, float))
-                else f"age {operator} {value}"
-            )
+            return f"age {operator} {value:g}" if isinstance(value, (int, float)) else f"age {operator} {value}"
         if isinstance(node, S.NIHSSFilter):
             operator = _format_operator(str(getattr(node, "operator", "")))
             value = getattr(node, "value", "")
-            return (
-                f"nihss {operator} {value:g}"
-                if isinstance(value, (int, float))
-                else f"nihss {operator} {value}"
-            )
+            return f"nihss {operator} {value:g}" if isinstance(value, (int, float)) else f"nihss {operator} {value}"
         if isinstance(node, S.SexFilter):
             return f"sex = {_normalize_title_token(str(getattr(node, 'value', '')))}"
         if isinstance(node, S.StrokeFilter):
             return f"stroke type = {_normalize_title_token(str(getattr(node, 'value', '')))}"
         if isinstance(node, S.BooleanFilter):
             boolean_type = str(getattr(node, "boolean_type", ""))
-            field_label = _normalize_title_token(
-                get_canonical_display_name(boolean_type)
-            )
+            field_label = _normalize_title_token(get_canonical_display_name(boolean_type))
             return f"{field_label} = {'yes' if bool(getattr(node, 'value', False)) else 'no'}"
         return ""
 
@@ -410,11 +400,7 @@ def _derive_title(
     sampled_period_override: Optional[str] = None,
 ) -> str:
     metric_codes = _metric_codes(plan_chart)
-    metrics_part = (
-        ", ".join(metric_codes)
-        if metric_codes
-        else get_metric_display_name(plan_chart.chart_type or "CHART")
-    )
+    metrics_part = ", ".join(metric_codes) if metric_codes else get_metric_display_name(plan_chart.chart_type or "CHART")
 
     across_dim: Optional[Dimension] = None
     for dimension in dimensions:
@@ -438,16 +424,12 @@ def _derive_title(
     if across_dim is None:
         across_part = _fallback_across(plan_chart, metric_codes)
     else:
-        across_label = _dimension_label(across_dim) or _fallback_across(
-            plan_chart, metric_codes
-        )
+        across_label = _dimension_label(across_dim) or _fallback_across(plan_chart, metric_codes)
         across_part = _normalize_title_token(across_label)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
     sampled_period = sampled_period_override or _sample_period(filters_node)
-    filters_part = _format_filter_text(
-        filters_node, include_date=sampled_period is None
-    )
+    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None)
 
     title = metrics_part
     if by_parts:
@@ -465,9 +447,7 @@ def build_chart_dto(
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]],
     sampled_period_override: Optional[str] = None,
 ) -> ChartDTO:
-    title_text = _derive_title(
-        plan_chart, dimensions, sampled_period_override=sampled_period_override
-    )
+    title_text = _derive_title(plan_chart, dimensions, sampled_period_override=sampled_period_override)
     chart_type_upper = (plan_chart.chart_type or "").upper()
 
     x_axis: Optional[ChartAxis] = None
@@ -489,9 +469,7 @@ def build_chart_dto(
     )
 
     if chart_type_upper == ChartType.LINE.value:
-        has_time_grouping = any(
-            isinstance(g, GroupByTime) for g in (plan_chart.group_by or [])
-        )
+        has_time_grouping = any(isinstance(g, GroupByTime) for g in (plan_chart.group_by or []))
         return LineChart(metadata=metadata, series=series, smooth=not has_time_grouping)
     if chart_type_upper == ChartType.BAR.value:
         return BarChart(metadata=metadata, series=series)
@@ -539,9 +517,7 @@ def build_chart_dto(
                 freq = _coerce_float(point.y)
                 if start is None or end is None or freq is None:
                     continue
-                bins.append(
-                    HistogramBin(range_start=start, range_end=end, frequency=freq)
-                )
+                bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
         return Histogram(metadata=metadata, data=bins, bin_count=max(1, len(bins)))
     if chart_type_upper == ChartType.BOX.value:
         values = sorted(_flatten_y_values(series))
