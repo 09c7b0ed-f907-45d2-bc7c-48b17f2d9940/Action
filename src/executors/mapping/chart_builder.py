@@ -26,6 +26,7 @@ from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
     get_metric_metadata,
+    get_operator_symbol,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,9 +67,9 @@ def _dimension_label(dimension: Dimension) -> Optional[str]:
         grain = getattr(dimension.spec, "grain", None)
         return str(grain or "time").lower()
     if isinstance(dimension.spec, GroupBySex):
-        return "Sex"
+        return get_canonical_display_name("SEX_TYPE")
     if isinstance(dimension.spec, GroupByStrokeType):
-        return "Stroke Type"
+        return get_canonical_display_name("STROKE_TYPE")
     if isinstance(dimension.spec, GroupByNIHSS):
         return get_canonical_display_name("ADMISSION_NIHSS")
     if isinstance(dimension.spec, GroupByAge):
@@ -93,16 +94,7 @@ def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
 
 
 def _format_operator(value: str) -> str:
-    token = (value or "").strip().upper()
-    mapping = {
-        "GE": ">=",
-        "GT": ">",
-        "LE": "<=",
-        "LT": "<",
-        "EQ": "=",
-        "NE": "!=",
-    }
-    return mapping.get(token, token)
+    return get_operator_symbol(value)
 
 
 def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -> str:
@@ -126,15 +118,15 @@ def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -
         if isinstance(node, S.DateFilter):
             if not include_date:
                 return ""
-            operator = _format_operator(str(getattr(node, "operator", "")))
+            operator = get_operator_symbol(str(getattr(node, "operator", "")))
             value = str(getattr(node, "value", ""))
             return f"discharge date {operator} {value}"
         if isinstance(node, S.AgeFilter):
-            operator = _format_operator(str(getattr(node, "operator", "")))
+            operator = get_operator_symbol(str(getattr(node, "operator", "")))
             value = getattr(node, "value", "")
             return f"age {operator} {value:g}" if isinstance(value, (int, float)) else f"age {operator} {value}"
         if isinstance(node, S.NIHSSFilter):
-            operator = _format_operator(str(getattr(node, "operator", "")))
+            operator = get_operator_symbol(str(getattr(node, "operator", "")))
             value = getattr(node, "value", "")
             return f"nihss {operator} {value:g}" if isinstance(value, (int, float)) else f"nihss {operator} {value}"
         if isinstance(node, S.SexFilter):
@@ -282,9 +274,9 @@ def _axis_label_for_dimension(dimension: Dimension) -> str:
         }
         return label_map.get(grain, _title_case_token(grain))
     if isinstance(dimension.spec, GroupBySex):
-        return "Sex"
+        return get_canonical_display_name("SEX_TYPE")
     if isinstance(dimension.spec, GroupByStrokeType):
-        return "Stroke Type"
+        return get_canonical_display_name("STROKE_TYPE")
     if isinstance(dimension.spec, GroupByNIHSS):
         return get_canonical_display_name("ADMISSION_NIHSS")
     if isinstance(dimension.spec, GroupByAge):

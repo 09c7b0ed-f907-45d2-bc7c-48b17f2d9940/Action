@@ -18,18 +18,6 @@ logger = logging.getLogger(__name__)
 
 _METRIC_METADATA: Dict[str, Any] = get_metric_metadata()
 
-_AXIS_LABEL_OVERRIDES: Dict[str, str] = {
-    "DTN": "Door-to-Needle Time",
-    "ONSET_TO_DOOR": "Onset-to-Door Time",
-    "DOOR_TO_REPERFUSION": "Door-to-Reperfusion Time",
-}
-
-_AXIS_UNIT_OVERRIDES: Dict[str, str] = {
-    "DTN": "minutes",
-    "ONSET_TO_DOOR": "minutes",
-    "DOOR_TO_REPERFUSION": "minutes",
-}
-
 _AXIS_ACRONYMS = {"NIHSS", "DTN", "IVT", "EVT", "TIA", "LVO", "ICH", "SAH", "CT", "MRI"}
 
 
@@ -148,12 +136,10 @@ def get_histogram_axes(
     code = (metric_code or "").upper()
     meta = _mapping_to_dict(_METRIC_METADATA.get(code))
 
-    display = _AXIS_LABEL_OVERRIDES.get(code) or _normalize_axis_display_label(
-        get_metric_display_name(code)
-    )
+    display = _normalize_axis_display_label(get_metric_display_name(code))
 
     unit_any: Any = meta.get("unit") or _mapping_to_dict(meta.get("numeric")).get("unit")
-    unit: Optional[str] = cast(Optional[str], unit_any) or _AXIS_UNIT_OVERRIDES.get(code)
+    unit: Optional[str] = cast(Optional[str], unit_any)
 
     x_label = f"{display} ({unit})" if unit else display
     return ChartAxis(label=x_label, min_value=x_min, max_value=x_max), ChartAxis(label="Cases")

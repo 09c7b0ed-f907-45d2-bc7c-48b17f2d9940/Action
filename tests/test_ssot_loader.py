@@ -39,5 +39,18 @@ class SsotLoaderTests(unittest.TestCase):
         ssot_loader.get_metric_text_lookup.cache_clear()
 
 
+class GetOperatorSymbolTests(unittest.TestCase):
+    def test_returns_real_symbols_from_disk(self) -> None:
+        # Regression guard: OperatorType.yml's GE/LE/EQ entries must keep the
+        # symbol as their first synonym, since get_operator_symbol (like every
+        # other SSOT display accessor) just returns the first synonym.
+        expected = {"GE": ">=", "LE": "<=", "LT": "<", "GT": ">", "EQ": "=", "NE": "!="}
+        for code, symbol in expected.items():
+            self.assertEqual(ssot_loader.get_operator_symbol(code), symbol)
+
+    def test_falls_back_to_code_when_unknown(self) -> None:
+        self.assertEqual(ssot_loader.get_operator_symbol("NOT_REAL"), "NOT_REAL")
+
+
 if __name__ == "__main__":
     unittest.main()
