@@ -11,24 +11,12 @@ from src.actions.i18n import resolve_language_from_tracker, translate
 from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
 from src.domain.langchain import schema as S
 from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
+from src.shared.ssot_loader import resolve_scope
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
 
 SKIP_SENTINEL = "__skip__"
-ALL_SCOPE_TOKENS = {"all", "all hospitals", "all sites", "all providers"}
-MINE_SCOPE_TOKENS = {
-    "mine",
-    "my",
-    "my hospital",
-    "my site",
-    "my center",
-    "my centre",
-    "our hospital",
-    "our site",
-    "our center",
-    "our centre",
-}
 SKIP_TOKENS = {
     SKIP_SENTINEL,
     "/skip_guided_step",
@@ -318,8 +306,8 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
     with log_context(trace_id=trace_id, sender_id=tracker.sender_id, user_sub=user_sub, validator="guided_hospital_scope"):
         scope_ref_any = entities.get("hospital_scope_reference")
         if isinstance(scope_ref_any, str) and scope_ref_any.strip():
-            scope_ref_norm = normalize_text(scope_ref_any)
-            if scope_ref_norm in ALL_SCOPE_TOKENS:
+            scope_ref_resolved = resolve_scope(scope_ref_any)
+            if scope_ref_resolved == "ALL":
                 return {
                     "guided_hospital_scope": _json_scope(
                         "all",
@@ -327,7 +315,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                         label=translate("action.guided.all_hospitals_label", language=language),
                     )
                 }
-            if scope_ref_norm in MINE_SCOPE_TOKENS:
+            if scope_ref_resolved == "MINE":
                 process_id, hostname = _runtime_instance_fields()
                 logger.debug(
                     "[GuidedVisualizationValidation] Mine scope validation",
@@ -375,7 +363,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
 
         hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
-        if isinstance(hospital_any, str) and hospital_any.strip() and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS:
+        if isinstance(hospital_any, str) and hospital_any.strip() and resolve_scope(hospital_any) != "ALL":
             page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
             providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
             providers_list: List[Dict[str, Any]] = []
@@ -416,7 +404,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
 
         raw_source = scope_ref_any if scope_ref_any is not None else slot_value
         raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
-        if normalize_text(raw) in ALL_SCOPE_TOKENS:
+        if resolve_scope(raw) == "ALL":
             return {
                 "guided_hospital_scope": _json_scope(
                     "all",

@@ -39,5 +39,23 @@ class SsotLoaderTests(unittest.TestCase):
         ssot_loader.get_metric_text_lookup.cache_clear()
 
 
+class ResolveScopeTests(unittest.TestCase):
+    def test_resolves_all_variants(self) -> None:
+        for value in ["all", "All Hospitals", "all sites", "ALL PROVIDERS"]:
+            self.assertEqual(ssot_loader.resolve_scope(value), "ALL")
+
+    def test_resolves_mine_variants(self) -> None:
+        for value in ["mine", "my hospital", "our centre", "MY SITE"]:
+            self.assertEqual(ssot_loader.resolve_scope(value), "MINE")
+
+    def test_resolves_non_english_variants(self) -> None:
+        # These had no locale coverage at all before ScopeType.yml existed.
+        self.assertEqual(ssot_loader.resolve_scope("moje nemocnice"), "MINE")
+        self.assertEqual(ssot_loader.resolve_scope("όλα"), "ALL")
+
+    def test_unknown_scope_returns_none(self) -> None:
+        self.assertIsNone(ssot_loader.resolve_scope("St. Mary's Hospital"))
+
+
 if __name__ == "__main__":
     unittest.main()

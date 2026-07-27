@@ -743,6 +743,11 @@ def resolve_stroke_type(value: str) -> Optional[str]:
     return _resolve_canonical_value("StrokeType.yml", value)
 
 
+def resolve_scope(value: str) -> Optional[str]:
+    """Resolve a hospital-scope reference (canonical or synonym) to ScopeType canonical value (ALL or MINE)."""
+    return _resolve_canonical_value("ScopeType.yml", value)
+
+
 __all__ = [
     "BASE_SSOT",
     "create_enum",
