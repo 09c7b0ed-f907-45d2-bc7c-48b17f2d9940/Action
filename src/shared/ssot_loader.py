@@ -184,7 +184,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
             if val is not None:
                 meta[key] = val
 
-        descriptions = _coerce_description_map(item.get("description"))
+        descriptions = _coerce_description_map(item.get("descriptions"))
         if descriptions:
             meta["descriptions"] = descriptions
 
@@ -414,7 +414,7 @@ def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
         code = canonical.strip().upper()
 
         synonyms = _flatten_synonyms(item.get("synonyms"))
-        descriptions = _coerce_description_map(item.get("description"))
+        descriptions = _coerce_description_map(item.get("descriptions"))
 
         data_type_any = _ci_get(item, "data_type")
         data_type: Optional[str]
