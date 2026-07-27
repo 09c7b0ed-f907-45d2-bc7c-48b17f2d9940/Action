@@ -743,6 +743,12 @@ def resolve_stroke_type(value: str) -> Optional[str]:
     return _resolve_canonical_value("StrokeType.yml", value)
 
 
+def resolve_country_code(value: str) -> Optional[str]:
+    """Resolve a country name or ISO 3166-1 alpha-2 code (canonical or synonym)
+    to its CountryType.yml canonical code."""
+    return _resolve_canonical_value("CountryType.yml", value)
+
+
 __all__ = [
     "BASE_SSOT",
     "create_enum",
