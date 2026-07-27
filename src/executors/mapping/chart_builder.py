@@ -32,22 +32,20 @@ logger = logging.getLogger(__name__)
 _METRIC_METADATA = get_metric_metadata()
 
 
-def _coerce_float(value: object) -> Optional[float]:
+def _coerce_float(value: object) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     try:
         return float(str(value))
-    except Exception:
-        return None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Expected numeric chart value, got {value!r}") from exc
 
 
 def _flatten_y_values(series: List[ChartSeries]) -> List[float]:
     values: List[float] = []
     for s in series:
         for p in s.data:
-            y = _coerce_float(p.y)
-            if y is not None:
-                values.append(y)
+            values.append(_coerce_float(p.y))
     return values
 
 
@@ -377,23 +375,6 @@ def _derive_axes_from_dimensions(
     return x_axis, y_axis
 
 
-def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
-    chart_type = (plan_chart.chart_type or "").upper()
-    if chart_type == ChartType.PIE.value:
-        return "category"
-
-    if len(metric_codes) != 1:
-        return "value range"
-
-    metric_code = metric_codes[0]
-    metric_unit = _metric_unit(metric_code)
-
-    if metric_unit:
-        return f"value range in {metric_unit}"
-
-    return "value range"
-
-
 def _derive_title(
     plan_chart: S.ChartSpec,
     dimensions: List[Dimension],
@@ -422,9 +403,9 @@ def _derive_title(
             by_parts.append(token)
 
     if across_dim is None:
-        across_part = _fallback_across(plan_chart, metric_codes)
+        across_part = "category"
     else:
-        across_label = _dimension_label(across_dim) or _fallback_across(plan_chart, metric_codes)
+        across_label = _dimension_label(across_dim) or "category"
         across_part = _normalize_title_token(across_label)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
@@ -469,7 +450,7 @@ def build_chart_dto(
     )
 
     if chart_type_upper == ChartType.LINE.value:
-        has_time_grouping = any(isinstance(g, GroupByTime) for g in (plan_chart.group_by or []))
+        has_time_grouping = any(isinstance(dimension.spec, GroupByTime) for dimension in dimensions)
         return LineChart(metadata=metadata, series=series, smooth=not has_time_grouping)
     if chart_type_upper == ChartType.BAR.value:
         return BarChart(metadata=metadata, series=series)
@@ -491,8 +472,6 @@ def build_chart_dto(
             for p in s.data:
                 key = str(p.x)
                 y = _coerce_float(p.y)
-                if y is None:
-                    continue
                 totals[key] = totals.get(key, 0.0) + y
         slices = [PieSlice(label=label, value=value) for label, value in totals.items()]
         return PieChart(metadata=metadata, data=slices)
@@ -501,8 +480,6 @@ def build_chart_dto(
         source = series[0].data if series else []
         for p in source:
             y = _coerce_float(p.y)
-            if y is None:
-                continue
             steps.append(WaterfallStep(label=str(p.x), value=y, is_positive=y >= 0))
         return WaterfallChart(metadata=metadata, data=steps)
     if chart_type_upper == ChartType.HISTOGRAM.value:
@@ -515,8 +492,6 @@ def build_chart_dto(
                 if idx + 1 < len(source):
                     end = _coerce_float(source[idx + 1].x)
                 freq = _coerce_float(point.y)
-                if start is None or end is None or freq is None:
-                    continue
                 bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
         return Histogram(metadata=metadata, data=bins, bin_count=max(1, len(bins)))
     if chart_type_upper == ChartType.BOX.value:
@@ -536,8 +511,4 @@ def build_chart_dto(
         )
         return BoxPlot(metadata=metadata, data=[box])
 
-    logger.warning(
-        "Chart type %s not yet implemented; defaulting to LINE rendering",
-        plan_chart.chart_type,
-    )
-    return LineChart(metadata=metadata, series=series)
+    raise ValueError(f"Unsupported chart type for DTO mapping: {plan_chart.chart_type}")

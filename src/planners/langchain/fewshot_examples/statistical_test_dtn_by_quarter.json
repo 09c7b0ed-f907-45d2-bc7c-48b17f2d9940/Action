@@ -1,0 +1,106 @@
+{
+  "category": "statistical_tests",
+  "user_utterance": "Run a Mann-Whitney U test comparing DTN between Q4 2025 and Q1 2026 for my hospital",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "quarter": [
+      "Q4_2025",
+      "Q1_2026"
+    ],
+    "scope": [
+      "mine"
+    ],
+    "statistical_test_type": [
+      "MANN_WHITNEY_U_TEST"
+    ]
+  },
+  "assistant": {
+    "charts": null,
+    "statistical_tests": [
+      {
+        "test_type": "MANN_WHITNEY_U_TEST",
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "label": "My hospital",
+              "country_code": null
+            }
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "label": "My hospital",
+              "country_code": null
+            }
+          }
+        ],
+        "group_by": null,
+        "filters": {
+          "type": "AndFilter",
+          "and_": [
+            {
+              "operator": "GE",
+              "type": "DateFilter",
+              "value": "2025-10-01"
+            },
+            {
+              "operator": "LE",
+              "type": "DateFilter",
+              "value": "2025-12-31"
+            }
+          ]
+        }
+      },
+      {
+        "test_type": "MANN_WHITNEY_U_TEST",
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "label": "My hospital",
+              "country_code": null
+            }
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "label": "My hospital",
+              "country_code": null
+            }
+          }
+        ],
+        "group_by": null,
+        "filters": {
+          "type": "AndFilter",
+          "and_": [
+            {
+              "operator": "GE",
+              "type": "DateFilter",
+              "value": "2026-01-01"
+            },
+            {
+              "operator": "LE",
+              "type": "DateFilter",
+              "value": "2026-03-31"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

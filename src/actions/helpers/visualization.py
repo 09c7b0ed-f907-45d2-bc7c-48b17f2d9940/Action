@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import logging
-from threading import Lock
 from typing import (
     Any,
     Dict,
     List,
-    Literal,
     Mapping,
     Optional,
     Protocol,
-    TypedDict,
     cast,
     runtime_checkable,
 )
@@ -20,17 +17,6 @@ from src.shared.ssot_loader import resolve_chart_type, resolve_sex, resolve_stro
 from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
-
-
-class QueryDecisionBase(TypedDict):
-    decision: Literal["proceed", "clarify", "reject"]
-    reason: str
-    message: Optional[str]
-
-
-class QueryDecision(QueryDecisionBase, total=False):
-    clarification_type: str
-    clarification_options: List[str]
 
 
 @runtime_checkable
@@ -63,7 +49,8 @@ _ENTITY_SSOT_RESOLVERS = {
 }
 
 
-def normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+    # Deterministic SSOT canonicalization only (no fallback inference).
     normalized: Dict[str, Any] = {}
     for key, value in entities.items():
         resolver = _ENTITY_SSOT_RESOLVERS.get(key)
@@ -133,268 +120,6 @@ def pretty_print_graphql_query(query: str) -> str:
     return "\n".join(lines)
 
 
-# _ENABLE_QUERY_GUARD = env_util.env_flag("ACTIONS_ENABLE_QUERY_GUARD", default=True)
-_QUERY_GUARD_TIMEOUT_SECONDS_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS", default="8") or "8"
-try:
-    _query_guard_timeout_seconds = max(1.0, float(_QUERY_GUARD_TIMEOUT_SECONDS_RAW))
-except Exception:
-    logger.debug(
-        "Invalid ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS; using fallback",
-        exc_info=True,
-        extra={
-            "log_context": {
-                "event": "actions.query_guard.config.timeout_fallback",
-                "operation": "module_init",
-                "outcome": "degraded",
-                "raw_value": _QUERY_GUARD_TIMEOUT_SECONDS_RAW,
-                "fallback_value": 8.0,
-            }
-        },
-    )
-    _query_guard_timeout_seconds = 8.0
-
-_QUERY_GUARD_TIMEOUT_SECONDS = _query_guard_timeout_seconds
-
-_QUERY_GUARD_TEMPERATURE_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TEMPERATURE", default="0") or "0"
-try:
-    _query_guard_temperature = float(_QUERY_GUARD_TEMPERATURE_RAW)
-except Exception:
-    logger.debug(
-        "Invalid ACTIONS_QUERY_GUARD_TEMPERATURE; using fallback",
-        exc_info=True,
-        extra={
-            "log_context": {
-                "event": "actions.query_guard.config.temperature_fallback",
-                "operation": "module_init",
-                "outcome": "degraded",
-                "raw_value": _QUERY_GUARD_TEMPERATURE_RAW,
-                "fallback_value": 0.0,
-            }
-        },
-    )
-    _query_guard_temperature = 0.0
-
-_QUERY_GUARD_TEMPERATURE = _query_guard_temperature
-
-_QUERY_GUARD_FAIL_OPEN = env_util.env_flag("ACTIONS_QUERY_GUARD_FAIL_OPEN", default=False)
-
-# _QUERY_GUARD_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore
-#     [
-#         (
-#             "system",
-#             """
-# You are a triage assistant for a clinical analytics visualization system.
-# Decide whether the user's request can proceed, requires clarification, or should be rejected.
-
-# Return strict JSON only with this schema:
-# {{
-#   "decision": "proceed" | "clarify" | "reject",
-#   "reason": "short_snake_case_reason",
-#   "message": string | null,
-#   "clarification_type": string | null,
-#   "clarification_options": string[] | null
-# }}
-
-# Rules:
-# - The ONLY required fields are metric and chart_type. All other fields (time_scope, time_range, grouping_dimension, sex, stroke_type) are optional — never ask for them unless the user explicitly mentioned wanting them.
-# - If metric and chart_type are both known (from entities or conversation history), return decision="proceed" immediately.
-# - If only one of metric or chart_type is missing, return decision="clarify" and ask for only that one thing.
-# - If request is out of scope for visualization flow, return decision="reject" with short actionable message.
-# - clarification_type should name only what is actually missing: metric or chart_type.
-# - clarification_options should contain concrete options only when natural; otherwise null.
-# - Prefer using supplied entities and conversation history to resolve ambiguity before asking.
-# - Do not include markdown, prose, or code fences.
-#             """.strip(),
-#         ),
-#         (
-#             "user",
-#             "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}",
-#         ),
-#     ]
-# )
-
-_query_guard_llm: Optional[Any] = None
-_query_guard_llm_lock = Lock()
-
-
-# def _get_query_guard_llm() -> Optional[Any]:
-#     global _query_guard_llm
-#     if _query_guard_llm is not None:
-#         return _query_guard_llm
-#     with _query_guard_llm_lock:
-#         if _query_guard_llm is not None:
-#             return _query_guard_llm
-#         try:
-#             _query_guard_llm = create_chat_llm(temperature=_QUERY_GUARD_TEMPERATURE)
-#         except Exception:
-#             logger.exception(
-#                 "Failed to initialize query-guard LLM",
-#                 extra={
-#                     "log_context": {
-#                         "event": "actions.query_guard.llm_init.failed",
-#                         "operation": "_get_query_guard_llm",
-#                         "outcome": "failure",
-#                         "fail_open_enabled": _QUERY_GUARD_FAIL_OPEN,
-#                         "timeout_seconds": _QUERY_GUARD_TIMEOUT_SECONDS,
-#                         "temperature": _QUERY_GUARD_TEMPERATURE,
-#                     }
-#                 },
-#             )
-#             _query_guard_llm = None
-#     return _query_guard_llm
-
-
-# def _metric_candidates(question: str, limit: int = 8) -> List[str]:
-#     normalized = ssot_loader.normalize_metric_text_key(question)
-#     if not normalized:
-#         return []
-
-#     lookup = ssot_loader.get_metric_text_lookup()
-#     if normalized in lookup:
-#         match = str(lookup[normalized]).strip()
-#         return [match] if match else []
-
-#     matches: List[str] = []
-#     for key, value in lookup.items():
-#         if normalized in key or key in normalized:
-#             match = str(value).strip()
-#             if match and match not in matches:
-#                 matches.append(match)
-#         if len(matches) >= limit:
-#             break
-#     return matches
-
-
-# def _invoke_query_guard(chain: Any, payload: Dict[str, Any]) -> QueryDecision:
-#     with ThreadPoolExecutor(max_workers=1) as executor:
-#         future = executor.submit(bind_current_context(chain.invoke), payload)
-#         try:
-#             response = future.result(timeout=_QUERY_GUARD_TIMEOUT_SECONDS)
-#         except FuturesTimeoutError as exc:
-#             future.cancel()
-#             raise TimeoutError(
-#                 f"Query guard timed out after {_QUERY_GUARD_TIMEOUT_SECONDS:.1f}s"
-#             ) from exc
-
-#     text = _extract_text(response)
-#     parsed = _extract_json_object(text)
-#     return _coerce_decision(parsed)
-
-
-# def evaluate_visualization_query(
-#     question: str,
-#     entities: Dict[str, Any],
-#     language: Optional[str] = None,
-# ) -> QueryDecision:
-#     if not _ENABLE_QUERY_GUARD:
-#         logger.debug(
-#             "Query guard disabled; proceeding without guard",
-#             extra={
-#                 "log_context": {
-#                     "event": "actions.query_guard.disabled",
-#                     "operation": "evaluate_visualization_query",
-#                     "outcome": "degraded",
-#                 }
-#             },
-#         )
-#         return {"decision": "proceed", "reason": "guard_disabled", "message": None}
-
-# guard_llm = _get_query_guard_llm()
-# if guard_llm is None:
-#     if _QUERY_GUARD_FAIL_OPEN:
-#         logger.warning(
-#             "Query-guard LLM unavailable; proceeding via fail-open",
-#             extra={
-#                 "log_context": {
-#                     "event": "actions.query_guard.llm_unavailable_fail_open",
-#                     "operation": "evaluate_visualization_query",
-#                     "outcome": "degraded",
-#                     "fail_open_enabled": True,
-#                 }
-#             },
-#         )
-#         return {
-#             "decision": "proceed",
-#             "reason": "guard_llm_unavailable",
-#             "message": None,
-#         }
-#     logger.warning(
-#         "Query-guard LLM unavailable; returning clarification fallback",
-#         extra={
-#             "log_context": {
-#                 "event": "actions.query_guard.llm_unavailable_clarify",
-#                 "operation": "evaluate_visualization_query",
-#                 "outcome": "degraded",
-#                 "fail_open_enabled": False,
-#             }
-#         },
-#     )
-#     return {
-#         "decision": "clarify",
-#         "reason": "guard_llm_unavailable",
-#         "message": "I need a bit more detail before I can continue.",
-#     }
-
-# chain = _QUERY_GUARD_PROMPT | guard_llm
-# metric_candidates = _metric_candidates(question or "")
-# payload = {
-#     "language": (language or "en").strip() or "en",
-#     "question": question or "",
-#     "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-#     "metric_candidates_json": json.dumps(metric_candidates, ensure_ascii=False),
-# }
-
-# try:
-#     return _invoke_query_guard(chain, payload)
-# except Exception:
-#     logger.exception(
-#         "LLM query guard failed",
-#         extra={
-#             "log_context": {
-#                 "event": "actions.query_guard.failed",
-#                 "operation": "evaluate_visualization_query",
-#                 "outcome": "failure",
-#                 "fail_open_enabled": _QUERY_GUARD_FAIL_OPEN,
-#                 "language": payload["language"],
-#                 "metric_candidate_count": len(metric_candidates),
-#             }
-#         },
-#     )
-#     if _QUERY_GUARD_FAIL_OPEN:
-#         logger.warning(
-#             "Query guard failed; proceeding via fail-open",
-#             extra={
-#                 "log_context": {
-#                     "event": "actions.query_guard.failed_fail_open",
-#                     "operation": "evaluate_visualization_query",
-#                     "outcome": "degraded",
-#                     "fail_open_enabled": True,
-#                 }
-#             },
-#         )
-#         return {
-#             "decision": "proceed",
-#             "reason": "guard_llm_failed",
-#             "message": None,
-#         }
-#     logger.warning(
-#         "Query guard failed; returning clarification fallback",
-#         extra={
-#             "log_context": {
-#                 "event": "actions.query_guard.failed_clarify",
-#                 "operation": "evaluate_visualization_query",
-#                 "outcome": "degraded",
-#                 "fail_open_enabled": False,
-#             }
-#         },
-#     )
-#     return {
-#         "decision": "clarify",
-#         "reason": "guard_llm_failed",
-#         "message": "I need a bit more detail before I can continue.",
-#     }
-
-
 def extract_entities_from_latest_message(
     latest_message: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -443,24 +168,8 @@ def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -
     return None
 
 
-def _strip_text_fields(value: Any) -> Any:
-    """Drop user-facing free-text fields to prevent LLM prose from reaching clients."""
-
-    if isinstance(value, dict):
-        out: Dict[str, Any] = {}
-        for key, child in _mapping_to_dict(value).items():
-            if key in {"title", "description"}:
-                continue
-            out[key] = _strip_text_fields(child)
-        return out
-    if isinstance(value, list):
-        items = cast(List[object], value)
-        return [_strip_text_fields(item) for item in items]
-    return value
-
-
 def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
-    """Serialize planner output for frontend consumption without mutating it."""
+    """Serialize planner output into a minimal preview contract for the frontend."""
 
     payload = _maybe_model_dump_dict(plan, mode="json", by_alias=True, exclude_none=True)
     if payload is not None:
@@ -474,8 +183,251 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
     if not payload_dict:
         return {}
 
-    sanitized_any = _strip_text_fields(payload_dict)
-    return cast(Dict[str, Any], sanitized_any) if isinstance(sanitized_any, dict) else {}
+    def _metric_preview(metric_any: Any) -> Dict[str, Any]:
+        metric = _mapping_to_dict(metric_any)
+        metric_code = metric.get("metric")
+        if not (isinstance(metric_code, str) and metric_code.strip()):
+            return {}
+
+        out: Dict[str, Any] = {"metric": metric_code.strip().upper()}
+
+        data_origin = _mapping_to_dict(metric.get("data_origin"))
+        if not data_origin:
+            data_origin = _mapping_to_dict(metric.get("dataOrigin"))
+        if data_origin:
+            data_origin_out: Dict[str, Any] = {}
+            provider_ids_any = data_origin.get("provider_id")
+            if isinstance(provider_ids_any, list):
+                provider_ids = []
+                for raw in cast(List[Any], provider_ids_any):
+                    if isinstance(raw, int) and raw > 0:
+                        provider_ids.append(raw)
+                if provider_ids:
+                    data_origin_out["provider_id"] = provider_ids
+
+            provider_group_ids_any = data_origin.get("provider_group_id")
+            if isinstance(provider_group_ids_any, list):
+                provider_group_ids = []
+                for raw in cast(List[Any], provider_group_ids_any):
+                    if isinstance(raw, int) and raw > 0:
+                        provider_group_ids.append(raw)
+                if provider_group_ids:
+                    data_origin_out["provider_group_id"] = provider_group_ids
+
+            if data_origin_out:
+                out["data_origin"] = data_origin_out
+
+        origin_scope = _mapping_to_dict(metric.get("origin_scope"))
+        if not origin_scope:
+            origin_scope = _mapping_to_dict(metric.get("originScope"))
+        if origin_scope:
+            origin_scope_out: Dict[str, Any] = {}
+            scope_type = origin_scope.get("scope_type")
+            if not isinstance(scope_type, str) or not scope_type.strip():
+                scope_type = origin_scope.get("scopeType")
+            if isinstance(scope_type, str) and scope_type.strip():
+                origin_scope_out["scope_type"] = scope_type.strip().upper()
+
+            label = origin_scope.get("label")
+            if isinstance(label, str) and label.strip():
+                origin_scope_out["label"] = label.strip()
+
+            value = origin_scope.get("value")
+            if isinstance(value, (str, int, float)) and value != "":
+                origin_scope_out["value"] = value
+
+            country_code = origin_scope.get("country_code")
+            if not isinstance(country_code, str) or not country_code.strip():
+                country_code = origin_scope.get("countryCode")
+            if isinstance(country_code, str) and country_code.strip():
+                origin_scope_out["country_code"] = country_code.strip().upper()
+
+            if origin_scope_out:
+                out["origin_scope"] = origin_scope_out
+
+        return out
+
+    def _split_preview(split_any: Any) -> Dict[str, Any]:
+        split = _mapping_to_dict(split_any)
+        kind = split.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            return {}
+
+        out: Dict[str, Any] = {"kind": kind.strip().upper()}
+        categories_any = split.get("categories")
+        if isinstance(categories_any, list):
+            categories: List[str] = []
+            for raw in cast(List[Any], categories_any):
+                if isinstance(raw, str) and raw.strip():
+                    categories.append(raw.strip().upper())
+            if categories:
+                out["categories"] = categories
+        return out
+
+    def _filter_preview(filter_any: Any) -> Dict[str, Any]:
+        filter_node = _mapping_to_dict(filter_any)
+        if not filter_node:
+            return {}
+
+        filter_type = filter_node.get("type")
+        if not isinstance(filter_type, str) or not filter_type.strip():
+            return {}
+
+        filter_type_norm = filter_type.strip().upper()
+        out: Dict[str, Any] = {"type": filter_type_norm}
+
+        operator = filter_node.get("operator")
+        if isinstance(operator, str) and operator.strip():
+            out["operator"] = operator.strip().upper()
+
+        value = filter_node.get("value")
+        if isinstance(value, (str, int, float, bool)):
+            out["value"] = value
+
+        if filter_type_norm == "ANDFILTER":
+            clauses_any = filter_node.get("and_")
+            if not isinstance(clauses_any, list):
+                clauses_any = filter_node.get("and")
+            if isinstance(clauses_any, list):
+                clauses: List[Dict[str, Any]] = []
+                for item in cast(List[Any], clauses_any):
+                    preview = _filter_preview(item)
+                    if preview:
+                        clauses.append(preview)
+                if clauses:
+                    out["and"] = clauses
+
+        elif filter_type_norm == "ORFILTER":
+            clauses_any = filter_node.get("or_")
+            if not isinstance(clauses_any, list):
+                clauses_any = filter_node.get("or")
+            if isinstance(clauses_any, list):
+                clauses: List[Dict[str, Any]] = []
+                for item in cast(List[Any], clauses_any):
+                    preview = _filter_preview(item)
+                    if preview:
+                        clauses.append(preview)
+                if clauses:
+                    out["or"] = clauses
+
+        elif filter_type_norm == "NOTFILTER":
+            clause_any = filter_node.get("not_")
+            if clause_any is None:
+                clause_any = filter_node.get("not")
+            preview = _filter_preview(clause_any)
+            if preview:
+                out["not"] = preview
+
+        return out
+
+    def _chart_preview(chart_any: Any) -> Dict[str, Any]:
+        chart = _mapping_to_dict(chart_any)
+        out: Dict[str, Any] = {}
+
+        chart_type = chart.get("chart_type")
+        if isinstance(chart_type, str) and chart_type.strip():
+            out["chart_type"] = chart_type.strip().upper()
+
+        metrics_any = chart.get("metrics")
+        if isinstance(metrics_any, list):
+            metrics: List[Dict[str, Any]] = []
+            for item in cast(List[Any], metrics_any):
+                preview = _metric_preview(item)
+                if preview:
+                    metrics.append(preview)
+            if metrics:
+                out["metrics"] = metrics
+
+        semantics = _mapping_to_dict(chart.get("semantics"))
+        if semantics:
+            semantics_out: Dict[str, Any] = {}
+            intent = semantics.get("intent")
+            if isinstance(intent, str) and intent.strip():
+                semantics_out["intent"] = intent.strip().upper()
+
+            measure = _mapping_to_dict(semantics.get("measure"))
+            measure_type = measure.get("type")
+            if isinstance(measure_type, str) and measure_type.strip():
+                semantics_out["measure"] = {"type": measure_type.strip().upper()}
+
+            time_spec = _mapping_to_dict(semantics.get("time"))
+            grain = time_spec.get("grain")
+            if isinstance(grain, str) and grain.strip():
+                semantics_out["time"] = {"grain": grain.strip().upper()}
+
+            splits_any = semantics.get("splits")
+            if isinstance(splits_any, list):
+                splits: List[Dict[str, Any]] = []
+                for item in cast(List[Any], splits_any):
+                    preview = _split_preview(item)
+                    if preview:
+                        splits.append(preview)
+                if splits:
+                    semantics_out["splits"] = splits
+
+            if semantics_out:
+                out["semantics"] = semantics_out
+
+        return out
+
+    def _statistical_test_preview(test_any: Any) -> Dict[str, Any]:
+        test = _mapping_to_dict(test_any)
+        out: Dict[str, Any] = {}
+
+        test_type = test.get("test_type")
+        if isinstance(test_type, str) and test_type.strip():
+            out["test_type"] = test_type.strip().upper()
+
+        metrics_any = test.get("metrics")
+        if isinstance(metrics_any, list):
+            metrics: List[Dict[str, Any]] = []
+            for item in cast(List[Any], metrics_any):
+                preview = _metric_preview(item)
+                if preview:
+                    metrics.append(preview)
+            if metrics:
+                out["metrics"] = metrics
+
+        group_by_any = test.get("group_by")
+        if isinstance(group_by_any, list):
+            group_by: List[Dict[str, Any]] = []
+            for item in cast(List[Any], group_by_any):
+                preview = _split_preview(item)
+                if preview:
+                    group_by.append(preview)
+            if group_by:
+                out["group_by"] = group_by
+
+        filters_any = test.get("filters")
+        filter_preview = _filter_preview(filters_any)
+        if filter_preview:
+            out["filters"] = filter_preview
+
+        return out
+
+    charts_any = payload_dict.get("charts")
+    charts: List[Dict[str, Any]] = []
+    if isinstance(charts_any, list):
+        for item in cast(List[Any], charts_any):
+            preview = _chart_preview(item)
+            if preview:
+                charts.append(preview)
+
+    tests_any = payload_dict.get("statistical_tests")
+    tests: List[Dict[str, Any]] = []
+    if isinstance(tests_any, list):
+        for item in cast(List[Any], tests_any):
+            preview = _statistical_test_preview(item)
+            if preview:
+                tests.append(preview)
+
+    out_payload: Dict[str, Any] = {}
+    if charts:
+        out_payload["charts"] = charts
+    if tests:
+        out_payload["statistical_tests"] = tests
+
+    return out_payload
 
 
 def format_execution_summary(
@@ -496,6 +448,9 @@ def format_execution_summary(
     estimated = summary_dict.get("estimated_queries")
     actual = summary_dict.get("actual_queries")
     chart_count = summary_dict.get("chart_count")
+    stats_count = summary_dict.get("stats_count")
+    stats_skipped = summary_dict.get("stats_skipped")
+    stats_errors = summary_dict.get("stats_errors")
     trace_id = summary_dict.get("trace_id")
     normalization = _mapping_to_dict(summary_dict.get("normalization")) or None
     batches_any = summary_dict.get("batches")
@@ -513,14 +468,55 @@ def format_execution_summary(
         )
 
     if isinstance(chart_count, int):
-        if chart_count == 1:
-            lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
+        has_stats = isinstance(stats_count, int) and stats_count > 0
+        if has_stats:
+            if chart_count == 1:
+                lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
+            elif chart_count > 1:
+                lines.append(
+                    t(
+                        "action.summary.plan_produced_many_charts",
+                        "Plan produced {chart_count} charts.",
+                        {"chart_count": chart_count},
+                    )
+                )
+        else:
+            if chart_count == 1:
+                lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
+            else:
+                lines.append(
+                    t(
+                        "action.summary.plan_produced_many_charts",
+                        "Plan produced {chart_count} charts.",
+                        {"chart_count": chart_count},
+                    )
+                )
+
+    if isinstance(stats_count, int) and stats_count > 0:
+        if stats_count == 1:
+            lines.append(t("action.summary.plan_produced_one_stat", "Plan produced 1 statistical test result."))
         else:
             lines.append(
                 t(
-                    "action.summary.plan_produced_many_charts",
-                    "Plan produced {chart_count} charts.",
-                    {"chart_count": chart_count},
+                    "action.summary.plan_produced_many_stats",
+                    "Plan produced {stats_count} statistical test results.",
+                    {"stats_count": stats_count},
+                )
+            )
+        if isinstance(stats_skipped, int) and stats_skipped > 0:
+            lines.append(
+                t(
+                    "action.summary.stats_skipped",
+                    "Skipped {stats_skipped} statistical test result(s).",
+                    {"stats_skipped": stats_skipped},
+                )
+            )
+        if isinstance(stats_errors, int) and stats_errors > 0:
+            lines.append(
+                t(
+                    "action.summary.stats_errors",
+                    "{stats_errors} statistical test result(s) returned errors.",
+                    {"stats_errors": stats_errors},
                 )
             )
 

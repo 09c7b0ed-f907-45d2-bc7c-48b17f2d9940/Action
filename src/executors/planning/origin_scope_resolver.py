@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, cast
 
 from src.domain.langchain import schema as S
-from src.executors.analytics_center.client import get_analytics_center_client
+from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
 from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,97 @@ def _parse_max_provider_ids(raw: str) -> int:
 
 
 _MAX_PROVIDER_IDS = _parse_max_provider_ids(_MAX_PROVIDER_IDS_RAW)
+
+_PROVIDER_CACHE_TTL_SECONDS_RAW = (
+    env_util.get_env("EXECUTOR_PROVIDER_CACHE_TTL_SECONDS", default="300") or "300"
+)
+
+
+def _parse_provider_cache_ttl_seconds(raw: str) -> int:
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 300
+
+
+_PROVIDER_CACHE_TTL_SECONDS = _parse_provider_cache_ttl_seconds(
+    _PROVIDER_CACHE_TTL_SECONDS_RAW
+)
+_MAX_PROVIDER_CACHE_ENTRIES = 64
+_PROVIDER_LIST_CACHE: Dict[tuple[str, str, str], tuple[float, List[Dict[str, Any]]]] = {}
+
+_AUTH_SESSION_MESSAGE = "I could not access your analytics session right now. Please refresh the app and try again."
+
+
+def _provider_cache_key(
+    *,
+    cache_type: str,
+    user_sub: str,
+    country_code: Optional[str],
+) -> tuple[str, str, str]:
+    return (
+        cache_type,
+        (user_sub or "").strip(),
+        (country_code or "").strip().upper(),
+    )
+
+
+def _provider_cache_get(
+    *,
+    cache_type: str,
+    user_sub: str,
+    country_code: Optional[str],
+) -> Optional[List[Dict[str, Any]]]:
+    if _PROVIDER_CACHE_TTL_SECONDS <= 0:
+        return None
+
+    key = _provider_cache_key(
+        cache_type=cache_type,
+        user_sub=user_sub,
+        country_code=country_code,
+    )
+    cached = _PROVIDER_LIST_CACHE.get(key)
+    if cached is None:
+        return None
+
+    cached_at, payload = cached
+    if time.monotonic() - cached_at > float(_PROVIDER_CACHE_TTL_SECONDS):
+        _PROVIDER_LIST_CACHE.pop(key, None)
+        return None
+
+    # Return a shallow copy so callers cannot mutate cached state.
+    return list(payload)
+
+
+def _provider_cache_set(
+    *,
+    cache_type: str,
+    user_sub: str,
+    country_code: Optional[str],
+    providers: List[Dict[str, Any]],
+) -> None:
+    if _PROVIDER_CACHE_TTL_SECONDS <= 0:
+        return
+
+    key = _provider_cache_key(
+        cache_type=cache_type,
+        user_sub=user_sub,
+        country_code=country_code,
+    )
+    _PROVIDER_LIST_CACHE[key] = (time.monotonic(), list(providers))
+
+    if len(_PROVIDER_LIST_CACHE) <= _MAX_PROVIDER_CACHE_ENTRIES:
+        return
+
+    # Drop the oldest cache entry.
+    oldest_key: Optional[tuple[str, str, str]] = None
+    oldest_ts = float("inf")
+    for candidate_key, (cached_at, _) in _PROVIDER_LIST_CACHE.items():
+        if cached_at < oldest_ts:
+            oldest_ts = cached_at
+            oldest_key = candidate_key
+    if oldest_key is not None:
+        _PROVIDER_LIST_CACHE.pop(oldest_key, None)
 
 
 def _origin_scope_log_context(
@@ -134,31 +226,68 @@ def _provider_group_country_code(group: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _is_missing_cached_token_error(exc: AnalyticsCenterError) -> bool:
+    if exc.status_code != 401:
+        return False
+    details = exc.details if isinstance(exc.details, dict) else {}
+    proxy_any = details.get("proxy")
+    proxy = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
+    reason_any = proxy.get("reason")
+    reason = reason_any.strip().lower() if isinstance(reason_any, str) and reason_any.strip() else ""
+    if "no cached user access token" in reason:
+        return True
+    return "no cached user access token" in (exc.message or "").lower()
+
+
+def _raise_if_auth_session_error(exc: AnalyticsCenterError) -> None:
+    if _is_missing_cached_token_error(exc):
+        raise OriginScopeResolutionError(
+            _AUTH_SESSION_MESSAGE,
+            reason="authentication",
+            clarification_type="auth_session",
+        )
+
+
 def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
+    cached = _provider_cache_get(
+        cache_type="accessible",
+        user_sub=user_sub,
+        country_code=country_code,
+    )
+    if cached is not None:
+        return cached[:_MAX_PROVIDER_IDS]
+
     client = get_analytics_center_client()
     out: List[Dict[str, Any]] = []
     offset = 0
     limit = 200
 
     while len(out) < _MAX_PROVIDER_IDS:
-        page = client.list_providers(
-            user_sub=user_sub,
-            trace_id=trace_id,
-            user=user_sub,
-            country_code=country_code,
-            limit=limit,
-            offset=offset,
-            raise_on_error=False,
-        )
-        if page is None:
+        try:
             page = client.list_providers(
                 user_sub=user_sub,
                 trace_id=trace_id,
                 country_code=country_code,
                 limit=limit,
                 offset=offset,
-                raise_on_error=False,
+                raise_on_error=True,
             )
+        except AnalyticsCenterError as exc:
+            _raise_if_auth_session_error(exc)
+            break
+        if page is None:
+            try:
+                page = client.list_providers(
+                    user_sub=user_sub,
+                    trace_id=trace_id,
+                    country_code=country_code,
+                    limit=limit,
+                    offset=offset,
+                    raise_on_error=True,
+                )
+            except AnalyticsCenterError as exc:
+                _raise_if_auth_session_error(exc)
+                break
 
         if not page:
             break
@@ -171,13 +300,213 @@ def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optio
 
         out.extend(providers)
         total_any = page.get("count")
-        total = total_any if total_any >= 0 else None
+        total = total_any if isinstance(total_any, int) and total_any >= 0 else None
         offset += len(providers)
 
         if total is not None and offset >= total:
             break
 
-    return out[:_MAX_PROVIDER_IDS]
+    trimmed = out[:_MAX_PROVIDER_IDS]
+    _provider_cache_set(
+        cache_type="accessible",
+        user_sub=user_sub,
+        country_code=country_code,
+        providers=trimmed,
+    )
+    return trimmed
+
+
+def _list_all_providers_catalog(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
+    cached = _provider_cache_get(
+        cache_type="catalog",
+        user_sub=user_sub,
+        country_code=country_code,
+    )
+    if cached is not None:
+        return cached[:_MAX_PROVIDER_IDS]
+
+    client = get_analytics_center_client()
+    out: List[Dict[str, Any]] = []
+    offset = 0
+    limit = 200
+
+    while len(out) < _MAX_PROVIDER_IDS:
+        try:
+            page = client.list_providers(
+                user_sub=user_sub,
+                trace_id=trace_id,
+                country_code=country_code,
+                limit=limit,
+                offset=offset,
+                raise_on_error=True,
+            )
+        except AnalyticsCenterError as exc:
+            _raise_if_auth_session_error(exc)
+            break
+
+        if not page:
+            break
+
+        results_any = page.get("results", [])
+        providers: List[Dict[str, Any]] = list(results_any)
+        if not providers:
+            break
+
+        out.extend(providers)
+        total_any = page.get("count")
+        total = total_any if isinstance(total_any, int) and total_any >= 0 else None
+        offset += len(providers)
+
+        if total is not None and offset >= total:
+            break
+
+    trimmed = out[:_MAX_PROVIDER_IDS]
+    _provider_cache_set(
+        cache_type="catalog",
+        user_sub=user_sub,
+        country_code=country_code,
+        providers=trimmed,
+    )
+    return trimmed
+
+
+def _search_accessible_providers_by_name(
+    requested_names: List[str],
+    user_sub: str,
+    trace_id: str,
+    country_code: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    logger.info(
+        "[origin_scope_resolver] searching accessible providers by name",
+        extra={
+            "trace_id": trace_id,
+            "requested_names": requested_names,
+            "country_code": country_code or "-",
+        },
+    )
+    cached = _provider_cache_get(
+        cache_type="accessible",
+        user_sub=user_sub,
+        country_code=country_code,
+    )
+    if cached is not None:
+        matched: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for requested in requested_names:
+            normalized = _normalize_text(requested)
+            for provider in _match_providers_by_name(cached, normalized):
+                provider_id = _provider_id(provider)
+                if provider_id is None or provider_id in seen_ids:
+                    continue
+                matched.append(provider)
+                seen_ids.add(provider_id)
+        return matched
+
+    client = get_analytics_center_client()
+    matched: List[Dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    exact_found: Dict[str, bool] = {
+        requested: False for requested in requested_names
+    }
+    requested_norms = {
+        requested: _normalize_text(requested) for requested in requested_names
+    }
+    offset = 0
+    limit = 200
+
+    while True:
+        try:
+            page = client.list_providers(
+                user_sub=user_sub,
+                trace_id=trace_id,
+                country_code=country_code,
+                limit=limit,
+                offset=offset,
+                raise_on_error=True,
+            )
+        except AnalyticsCenterError as exc:
+            _raise_if_auth_session_error(exc)
+            break
+
+        if not page:
+            break
+
+        results_any = page.get("results", [])
+        providers: List[Dict[str, Any]] = list(results_any)
+        if not providers:
+            break
+
+        for requested, normalized in requested_norms.items():
+            if exact_found.get(requested):
+                continue
+            page_matches = _match_providers_by_name(providers, normalized)
+            for provider in page_matches:
+                provider_id = _provider_id(provider)
+                if provider_id is None or provider_id in seen_ids:
+                    continue
+                matched.append(provider)
+                seen_ids.add(provider_id)
+                if _normalize_text(_provider_name(provider)) == normalized:
+                    exact_found[requested] = True
+
+        if all(exact_found.values()):
+            break
+
+        total_any = page.get("count")
+        total = total_any if isinstance(total_any, int) and total_any >= 0 else None
+        offset += len(providers)
+        if total is not None and offset >= total:
+            break
+
+    return matched
+
+
+def _match_providers_by_name(providers: List[Dict[str, Any]], normalized: str) -> List[Dict[str, Any]]:
+    exact: List[Dict[str, Any]] = []
+    fuzzy: List[Dict[str, Any]] = []
+    for provider in providers:
+        name = _provider_name(provider)
+        if not name:
+            continue
+        provider_norm = _normalize_text(name)
+        if provider_norm == normalized:
+            exact.append(provider)
+        elif normalized in provider_norm or provider_norm in normalized:
+            fuzzy.append(provider)
+    return exact or fuzzy
+
+
+def _requested_provider_names(value: Any) -> List[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, list):
+        out: List[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            token = item.strip()
+            if not token:
+                continue
+            key = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(token)
+        return out
+    return []
+
+
+def _format_name_list(names: List[str], max_items: int = 5) -> str:
+    selected = [name for name in names if isinstance(name, str) and name.strip()][:max_items]
+    if not selected:
+        return ""
+    quoted = ['"' + name.replace('"', '\\"') + '"' for name in selected]
+    if len(quoted) == 1:
+        return quoted[0]
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
 
 
 def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -187,14 +516,18 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
     limit = 200
 
     while len(out) < _MAX_PROVIDER_IDS:
-        page = client.list_provider_groups(
-            user_sub=user_sub,
-            trace_id=trace_id,
-            country=country_code,
-            limit=limit,
-            offset=offset,
-            raise_on_error=False,
-        )
+        try:
+            page = client.list_provider_groups(
+                user_sub=user_sub,
+                trace_id=trace_id,
+                country=country_code,
+                limit=limit,
+                offset=offset,
+                raise_on_error=True,
+            )
+        except AnalyticsCenterError as exc:
+            _raise_if_auth_session_error(exc)
+            break
         if not page:
             break
 
@@ -206,7 +539,7 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
 
         out.extend(groups)
         total_any = page.get("count")
-        total = total_any if total_any >= 0 else None
+        total = total_any if isinstance(total_any, int) and total_any >= 0 else None
         offset += len(groups)
 
         if total is not None and offset >= total:
@@ -217,7 +550,11 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
 
 def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSpec]:
     client = get_analytics_center_client()
-    scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=False)
+    try:
+        scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=True)
+    except AnalyticsCenterError as exc:
+        _raise_if_auth_session_error(exc)
+        return None
     if not isinstance(scope, dict):
         return None
 
@@ -233,55 +570,96 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSp
 
 
 def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOriginSpec:
-    if not isinstance(value, str) or not value.strip():
+    requested_names = _requested_provider_names(value)
+    if not requested_names:
         raise OriginScopeResolutionError(
             "I need a specific hospital name to resolve scope.",
             clarification_type="provider_name",
         )
 
-    normalized = _normalize_text(value)
-    providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+    providers = _search_accessible_providers_by_name(
+        requested_names=requested_names,
+        user_sub=user_sub,
+        trace_id=trace_id,
+    )
     if not providers:
+        # If we can still find the hospital in the global catalog, surface a
+        # clear access-related message instead of a generic load failure.
+        catalog = _list_all_providers_catalog(user_sub=user_sub, trace_id=trace_id)
+        inaccessible_names: List[str] = []
+        for requested in requested_names:
+            normalized = _normalize_text(requested)
+            if _match_providers_by_name(catalog, normalized):
+                inaccessible_names.append(requested)
+        if inaccessible_names:
+            listed = _format_name_list(inaccessible_names)
+            raise OriginScopeResolutionError(
+                f"You do not currently have access to {listed}.",
+                clarification_type="provider_name",
+            )
         raise OriginScopeResolutionError(
             "I could not load accessible hospitals to resolve the requested scope.",
             clarification_type="provider_name",
         )
 
-    exact: List[Dict[str, Any]] = []
-    fuzzy: List[Dict[str, Any]] = []
-    for provider in providers:
-        name = _provider_name(provider)
-        if not name:
+    provider_ids: List[int] = []
+    inaccessible_names = []
+    unknown_names: List[str] = []
+    catalog: Optional[List[Dict[str, Any]]] = None
+
+    for requested in requested_names:
+        normalized = _normalize_text(requested)
+        matches = _match_providers_by_name(providers, normalized)
+        if not matches:
+            if catalog is None:
+                catalog = _list_all_providers_catalog(user_sub=user_sub, trace_id=trace_id)
+            catalog_matches = _match_providers_by_name(catalog, normalized)
+            if catalog_matches:
+                inaccessible_names.append(requested)
+            else:
+                unknown_names.append(requested)
             continue
-        provider_norm = _normalize_text(name)
-        if provider_norm == normalized:
-            exact.append(provider)
-        elif normalized in provider_norm or provider_norm in normalized:
-            fuzzy.append(provider)
 
-    matches = exact or fuzzy
-    if not matches:
-        raise OriginScopeResolutionError(
-            "I could not match that hospital to an accessible provider.",
-            clarification_type="provider_name",
-        )
+        if len(matches) > 1:
+            options = [_provider_name(item) for item in matches[:5] if _provider_name(item)]
+            raise OriginScopeResolutionError(
+                f"I found multiple hospitals matching '{requested}'. Please be more specific.",
+                clarification_type="provider_name",
+                clarification_options=options,
+            )
 
-    if len(matches) > 1:
-        options = [_provider_name(item) for item in matches[:5] if _provider_name(item)]
+        provider_id = _provider_id(matches[0])
+        if provider_id is None:
+            raise OriginScopeResolutionError(
+                f"I matched '{requested}', but its provider ID is unavailable.",
+                clarification_type="provider_name",
+            )
+        if provider_id not in provider_ids:
+            provider_ids.append(provider_id)
+
+    if inaccessible_names:
+        options = [_provider_name(item) for item in providers[:5] if _provider_name(item)]
+        listed = _format_name_list(inaccessible_names)
         raise OriginScopeResolutionError(
-            "I found multiple hospitals matching that name. Please be more specific.",
+            f"You do not currently have access to {listed}.",
             clarification_type="provider_name",
             clarification_options=options,
         )
 
-    provider_id = _provider_id(matches[0])
-    if provider_id is None:
+    if unknown_names:
+        listed = _format_name_list(unknown_names)
         raise OriginScopeResolutionError(
-            "I matched the hospital name, but its provider ID is unavailable.",
+            f"I could not match {listed} to an accessible provider.",
             clarification_type="provider_name",
         )
 
-    return S.DataOriginSpec(providerId=[provider_id])
+    if not provider_ids:
+        raise OriginScopeResolutionError(
+            "I could not match the requested hospitals to accessible providers.",
+            clarification_type="provider_name",
+        )
+
+    return S.DataOriginSpec(providerId=provider_ids)
 
 
 def _resolve_provider_group_name(value: Any, user_sub: str, trace_id: str) -> S.DataOriginSpec:
@@ -668,12 +1046,12 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
             resolved_metrics.append(resolved_metric)
 
         chart_filters = cast(Optional[S.FilterNode], getattr(chart, "filters", None))
-        chart_group_by = cast(Optional[List[S.GroupBySpec]], getattr(chart, "group_by", None))
+        chart_semantics = cast(Optional[S.AnalysisSemanticsSpec], getattr(chart, "semantics", None))
         chart_numeric_resolution = cast(Optional[S.NumericResolutionSpec], getattr(chart, "numeric_resolution", None))
         resolved_chart = S.ChartSpec(
             chart_type=chart.chart_type,
+            semantics=chart_semantics,
             filters=chart_filters,
-            group_by=chart_group_by,
             metrics=resolved_metrics,
             numericResolution=chart_numeric_resolution,
         )

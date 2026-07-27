@@ -7,6 +7,8 @@ from typing import Any
 
 
 def _ensure_package(name: str, path: Path) -> None:
+    if name in sys.modules:
+        return
     package = types.ModuleType(name)
     package.__path__ = [str(path)]
     sys.modules[name] = package

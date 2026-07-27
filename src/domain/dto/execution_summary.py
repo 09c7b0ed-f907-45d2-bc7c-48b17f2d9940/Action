@@ -35,6 +35,9 @@ class PlanNormalizationSummary(BaseModel):
 class ExecutionSummary(BaseModel):
     trace_id: Optional[str] = None
     chart_count: int
+    stats_count: int = 0
+    stats_skipped: int = 0
+    stats_errors: int = 0
     estimated_queries: int
     actual_queries: int
     batches: List[ExecutionBatchSummary] = Field(default_factory=_batch_list)

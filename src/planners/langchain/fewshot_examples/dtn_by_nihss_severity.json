@@ -1,0 +1,70 @@
+{
+  "category": "splits",
+  "user_utterance": "Show me a bar chart of DTN grouped by NIHSS score, split into 0-10 and 10-25",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "BAR"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN",
+            "percentile": null
+          },
+          "splits": [
+            {
+              "kind": "NIHSS",
+              "field": null,
+              "categories": null,
+              "buckets": [
+                {
+                  "min": 0,
+                  "max": 10
+                },
+                {
+                  "min": 10,
+                  "max": 25
+                }
+              ]
+            }
+          ],
+          "time": null,
+          "x_axis": {
+            "role": "CATEGORY",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEDIAN",
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

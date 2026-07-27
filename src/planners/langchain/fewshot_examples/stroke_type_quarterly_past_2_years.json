@@ -1,0 +1,64 @@
+{
+  "category": "time",
+  "user_utterance": "show me a bar chart of stroke type quarterly over the past 2 years",
+  "entities_detected": {
+    "metric": [
+      "STROKE_TYPE"
+    ],
+    "chart_type": [
+      "BAR"
+    ],
+    "date": [
+      "past 2 years"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": {
+            "grain": "QUARTER",
+            "window": {
+              "last_n": 2,
+              "unit": "YEAR"
+            },
+            "include_partial": null
+          },
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "STROKE_TYPE",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "STROKE_TYPE",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

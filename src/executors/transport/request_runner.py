@@ -153,6 +153,12 @@ async def run_graphql_request(
         )
         return []
 
+    def _append_warning(message: str) -> None:
+        if request_warnings is None:
+            return
+        if message not in request_warnings:
+            request_warnings.append(message)
+
     metrics_payload = None
     if (x := resp) and (x := x.data) and (x := x.get_metrics) and (x := x.metrics):
         metrics_payload = x
@@ -174,61 +180,38 @@ async def run_graphql_request(
         )
 
     if not metrics_payload:
+        has_errors = bool(getattr(resp, "errors", None))
         logger.warning(
             "[plan_executor] GraphQL response had no metrics payload (groupBy=%s, labels=%s, hash=%s, has_errors=%s)",
             group_by_field,
             request_label,
             q_hash,
-            bool(getattr(resp, "errors", None)),
+            has_errors,
             extra=_runner_log_context(
                 event="request_runner.metrics_payload_missing",
                 outcome="degraded",
                 request_label=request_label,
                 query_hash=q_hash,
                 group_by_field=group_by_field,
-                has_errors=bool(getattr(resp, "errors", None)),
+                has_errors=has_errors,
             ),
         )
+        if has_errors:
+            _append_warning(f"No data returned for {request_label}; the backend returned validation errors.")
         return []
 
-    metric_count = 0
+    metric_count = len(metrics_payload)
     kpi_group_count = 0
-    try:
-        metric_count = len(metrics_payload)
-        for metric_alias, metric in metrics_payload.items():
-            kpi_groups = getattr(metric, "kpi_group", None)
-            if kpi_groups is None:
-                continue
-            try:
-                kpi_group_count += len(kpi_groups)
-            except Exception:
-                logger.debug(
-                    "[plan_executor] Failed to count KPI groups; using fallback count",
-                    extra=_runner_log_context(
-                        event="request_runner.kpi_group_count_fallback",
-                        outcome="degraded",
-                        request_label=request_label,
-                        query_hash=q_hash,
-                        group_by_field=group_by_field,
-                        metric_alias=str(metric_alias),
-                        fallback_count=1,
-                    ),
-                    exc_info=True,
-                )
-                kpi_group_count += 1
-    except Exception:
-        logger.debug(
-            "[plan_executor] Failed to inspect metrics payload counts; using zero-count fallback",
-            extra=_runner_log_context(
-                event="request_runner.metrics_payload_count_fallback",
-                outcome="degraded",
-                request_label=request_label,
-                query_hash=q_hash,
-                group_by_field=group_by_field,
-            ),
-            exc_info=True,
-        )
-        metric_count = 0
+    for metric_alias, metric in metrics_payload.items():
+        kpi_groups = getattr(metric, "kpi_group", None)
+        if kpi_groups is None:
+            continue
+        if not isinstance(kpi_groups, list):
+            raise ValueError(
+                "Invalid GraphQL metrics payload: "
+                f"metric {metric_alias!r} has non-list kpi_group"
+            )
+        kpi_group_count += len(kpi_groups)
 
     series = map_metrics_payload_to_series(
         metrics_payload=metrics_payload,
@@ -241,38 +224,20 @@ async def run_graphql_request(
     )
 
     skipped_rows = 0
-    metric_alias_for_rows: Optional[str] = None
-    try:
-        for metric_alias, metric in metrics_payload.items():
-            metric_alias_for_rows = str(metric_alias)
-            kpi_groups = getattr(metric, "kpi_group", None)
-            if not isinstance(kpi_groups, list):
-                continue
-            for kpi in cast(List[object], kpi_groups):
-                if getattr(kpi, "kpi1", None) is None:
-                    skipped_rows += 1
-    except Exception:
-        logger.debug(
-            "[plan_executor] Failed to inspect skipped KPI rows; using zero skipped-row fallback",
-            extra=_runner_log_context(
-                event="request_runner.skipped_rows_count_fallback",
-                outcome="degraded",
-                request_label=request_label,
-                query_hash=q_hash,
-                group_by_field=group_by_field,
-                metric_alias=metric_alias_for_rows,
-            ),
-            exc_info=True,
-        )
-        skipped_rows = 0
+    for metric_alias, metric in metrics_payload.items():
+        kpi_groups = getattr(metric, "kpi_group", None)
+        if kpi_groups is None:
+            continue
+        if not isinstance(kpi_groups, list):
+            raise ValueError(
+                "Invalid GraphQL metrics payload: "
+                f"metric {metric_alias!r} has non-list kpi_group"
+            )
+        for kpi in cast(List[object], kpi_groups):
+            if getattr(kpi, "kpi1", None) is None:
+                skipped_rows += 1
 
     total_rows = kpi_group_count
-
-    def _append_warning(message: str) -> None:
-        if request_warnings is None:
-            return
-        if message not in request_warnings:
-            request_warnings.append(message)
 
     if not series:
         if total_rows > 0:

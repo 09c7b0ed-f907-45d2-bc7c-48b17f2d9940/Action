@@ -26,15 +26,13 @@ def _mapping_to_dict(value: Any) -> dict[str, Any]:
 
 
 def _numeric_filter_properties() -> set[str]:
+    """Canonical metric names valid as an IntegerFilter.property (Numeric-type metrics)."""
     out: set[str] = set()
     metadata = get_metric_metadata()
-    for meta in metadata.values():
+    for canonical, meta in metadata.items():
         meta_dict = _mapping_to_dict(meta)
-        props = meta_dict.get("properties")
-        if isinstance(props, list):
-            for prop in cast(List[object], props):
-                if isinstance(prop, str) and prop.strip():
-                    out.add(prop.strip().upper())
+        if str(meta_dict.get("data_type") or "").strip().lower() == "numeric":
+            out.add(canonical.strip().upper())
     # Safe fallback for legacy environments with partial metadata.
     if not out:
         out = {
@@ -51,7 +49,7 @@ def _numeric_filter_properties() -> set[str]:
 _NUMERIC_FILTER_PROPERTIES = _numeric_filter_properties()
 
 
-def _default_time_bounds() -> tuple[str, str]:
+def default_time_bounds() -> tuple[str, str]:
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=730)
     return start_date.isoformat(), end_date.isoformat()
@@ -139,6 +137,7 @@ class MetricRequest(BaseModel):
     include_stats: bool = Field(default=False, alias="includeStats")
     include_distribution: bool = Field(default=False, alias="includeDistribution")
     include_grouping: bool = Field(default=False, alias="includeGrouping")
+    include_labels: bool = Field(default=False, alias="includeLabels")
 
     metric_options: Optional[MetricOptions] = Field(default=None, alias="metricOptions")
     distribution_options: Optional[DistributionOptions] = Field(default=None, alias="distributionOptions")
@@ -158,20 +157,23 @@ class MetricRequest(BaseModel):
         self.metric_options.upper_boundary = upper
         return self
 
-    def with_bounds(self, lower: int, upper: int) -> "MetricRequest":
-        """Builder method: set metric boundaries"""
-        if not self.metric_options:
-            self.metric_options = MetricOptions()
-        self.metric_options.lower_boundary = lower
-        self.metric_options.upper_boundary = upper
+    def with_categorical(self) -> "MetricRequest":
+        """Builder method: request category labels + bare per-category kpi counts.
+
+        Enumeration-type metrics (e.g. SEX, HOSPITALIZED_IN) reject the numeric
+        kpi(kpiOptions: {lowerBoundary, upperBoundary}) / distribution() shape used for
+        continuous metrics. The backend instead returns caseCount/percents as
+        parallel arrays aligned with the metric's labels field.
+        """
+        self.include_labels = True
         return self
 
 
 class TimePeriod(BaseModel):
     """Time period for the query"""
 
-    start_date: Optional[str] = Field(default_factory=lambda: _default_time_bounds()[0], alias="startDate")
-    end_date: Optional[str] = Field(default_factory=lambda: _default_time_bounds()[1], alias="endDate")
+    start_date: Optional[str] = Field(default_factory=lambda: default_time_bounds()[0], alias="startDate")
+    end_date: Optional[str] = Field(default_factory=lambda: default_time_bounds()[1], alias="endDate")
 
     @model_validator(mode="after")
     def _fill_none_bounds(self):
@@ -179,7 +181,7 @@ class TimePeriod(BaseModel):
 
         This allows callers to pass None to mean "use the implicit min/max".
         """
-        default_start, default_end = _default_time_bounds()
+        default_start, default_end = default_time_bounds()
         if self.start_date is None:
             self.start_date = default_start
         if self.end_date is None:
@@ -310,8 +312,8 @@ class GraphQLQueryGenerator:
                 return f'''{{
                     leaf: {{
                         integerCaseFilter: {{
-                            property: "{filter_obj.property}",
-                            operator: "{filter_obj.operator.value}",
+                            property: {filter_obj.property},
+                            operator: {filter_obj.operator.value},
                             value: {filter_obj.value}
                         }}
                     }}
@@ -321,7 +323,7 @@ class GraphQLQueryGenerator:
                 return f'''{{
                     leaf: {{
                         booleanCaseFilter: {{
-                            property: "{filter_obj.property}",
+                            property: {filter_obj.property.value},
                             value: {str(filter_obj.value).lower()}
                         }}
                     }}
@@ -374,7 +376,12 @@ class GraphQLQueryGenerator:
         kpi_fields = ["caseCount"]
 
         if metric.include_stats:
-            kpi_fields.extend(["percents", "normalizedPercents", "cohortSize", "normalizedCohortSize", "median", "mean", "variance", "confidenceIntervalMean", "confidenceIntervalMedian", "interquartileRange", "quartiles"])
+            kpi_fields.extend(["percents", "normalizedPercents", "cohortSize", "normalizedCohortSize"])
+            if not metric.include_labels:
+                # Enumeration-type metrics reject purely numeric statistics
+                # (median/mean/variance/confidence intervals/quartiles); those
+                # only apply to continuous metrics.
+                kpi_fields.extend(["median", "mean", "variance", "confidenceIntervalMean", "confidenceIntervalMedian", "interquartileRange", "quartiles"])
 
         if metric.include_distribution and metric.distribution_options:
             kpi_fields.append(f"""
@@ -387,7 +394,7 @@ class GraphQLQueryGenerator:
             """)
 
         kpi_options = ""
-        if metric.metric_options:
+        if metric.metric_options and not metric.include_labels:
             options: List[str] = []
             if metric.metric_options.lower_boundary is not None:
                 options.append(f"lowerBoundary: {metric.metric_options.lower_boundary}")
@@ -413,8 +420,11 @@ class GraphQLQueryGenerator:
                 }
             """)
 
+        labels_field = "labels" if metric.include_labels else ""
+
         return f"""
             {alias}: metric(metricId: {metric.metric_type.value}) {{
+                {labels_field}
                 kpiGroup {{
                     {" ".join(kpi_group_fields)}
                 }}

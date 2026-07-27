@@ -1,0 +1,50 @@
+[
+  {
+    "id": "chart_line_dtn",
+    "kind": "single_turn",
+    "prompt": "Show me a line graph of DTN",
+    "entities": {
+      "metric": "DTN",
+      "chart_type": "LINE"
+    },
+    "expected": {
+      "decision": "proceed",
+      "plan_kind": "chart",
+      "chart_type": "LINE",
+      "metric": "DTN"
+    }
+  },
+  {
+    "id": "chart_line_dtn_with_year_entity",
+    "kind": "single_turn",
+    "prompt": "Show me a line graph of DTN for 2026",
+    "entities": {
+      "metric": "DTN",
+      "chart_type": "LINE",
+      "date": ["2026"]
+    },
+    "expected": {
+      "decision": "proceed",
+      "plan_kind": "chart",
+      "chart_type": "LINE",
+      "metric": "DTN"
+    }
+  },
+  {
+    "id": "chart_bar_dtn_with_optional_demographics",
+    "kind": "single_turn",
+    "prompt": "Show me a bar chart of DTN for women with ischemic stroke",
+    "entities": {
+      "metric": "DTN",
+      "chart_type": "BAR",
+      "sex": ["female"],
+      "stroke_type": ["ischemic"]
+    },
+    "expected": {
+      "decision": "proceed",
+      "plan_kind": "chart",
+      "chart_type": "BAR",
+      "metric": "DTN"
+    }
+  }
+]

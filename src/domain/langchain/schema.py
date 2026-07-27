@@ -503,6 +503,196 @@ GroupBySpec = Union[
 ]
 
 
+AnalysisIntentType = [
+    "DISTRIBUTION",
+    "TREND",
+    "COMPARISON",
+    "RELATIONSHIP",
+    "RANK",
+]
+
+MeasureType = [
+    "DISTRIBUTION",
+    "COUNT",
+    "MEAN",
+    "MEDIAN",
+    "PERCENTILE",
+    "SUM",
+    "MIN",
+    "MAX",
+    "RATE",
+]
+
+SplitKindType = [
+    "SEX",
+    "STROKE_TYPE",
+    "AGE",
+    "NIHSS",
+    "BOOLEAN",
+    "CANONICAL",
+    "CUSTOM",
+]
+
+AxisRoleType = [
+    "METRIC_VALUE",
+    "TIME",
+    "COUNT",
+    "AGGREGATE_VALUE",
+    "CATEGORY",
+]
+
+
+class MeasureSemanticsSpec(BaseModel):
+    """Semantic description of what value should be computed for chart output."""
+
+    type: str
+    percentile: Optional[float] = None
+
+    @field_validator("type")
+    def validate_type(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in MeasureType:
+            raise ValueError(f"{v} is not a valid measure type. Allowed: {MeasureType}")
+        return v_norm
+
+    @model_validator(mode="after")
+    def validate_percentile(self) -> "MeasureSemanticsSpec":
+        if self.type == "PERCENTILE":
+            if self.percentile is None:
+                raise ValueError("measure.percentile is required when measure.type is PERCENTILE")
+            if not (0.0 < self.percentile <= 100.0):
+                raise ValueError("measure.percentile must be > 0 and <= 100")
+            return self
+        if self.percentile is not None:
+            raise ValueError("measure.percentile is only allowed when measure.type is PERCENTILE")
+        return self
+
+
+class TimeSemanticsSpec(BaseModel):
+    """Semantic time context for analysis, independent of backend retrieval strategy."""
+
+    grain: Optional[str] = None
+    window: Optional[Union[TimeWindow, TimeRange]] = None
+    include_partial: Optional[bool] = None
+
+    @field_validator("grain")
+    def validate_grain(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        if v_norm not in TIME_INTERVALS:
+            raise ValueError(f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}")
+        return v_norm
+
+
+class SplitSpec(BaseModel):
+    """Semantic split/cohort instruction for analysis.
+
+    This is planner-facing semantics. Backend groupBy selection is handled by
+    retrieval compilation and must not leak here.
+    """
+
+    kind: str
+    field: Optional[str] = None
+    categories: Optional[List[str]] = None
+    buckets: Optional[List[Bucket]] = Field(
+        default=None,
+        description="Explicit numeric buckets for AGE/NIHSS splits, e.g. [{min:0,max:10}, {min:10,max:20}].",
+    )
+
+    @field_validator("kind")
+    def validate_kind(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in SplitKindType:
+            raise ValueError(f"{v} is not a valid split kind. Allowed: {SplitKindType}")
+        return v_norm
+
+    @model_validator(mode="after")
+    def validate_field_requirements(self) -> "SplitSpec":
+        if self.kind in {"BOOLEAN", "CANONICAL"}:
+            if not isinstance(self.field, str) or not self.field.strip():
+                raise ValueError(f"split.field is required when split.kind is {self.kind}")
+            self.field = self.field.strip().upper()
+        elif self.field is not None and not self.field.strip():
+            self.field = None
+
+        if self.kind in {"AGE", "NIHSS"}:
+            if not self.buckets:
+                raise ValueError(f"split.buckets is required when split.kind is {self.kind}")
+            for bucket in self.buckets:
+                if bucket.min >= bucket.max:
+                    raise ValueError("Each split.buckets entry requires min < max.")
+        elif self.buckets is not None and not self.buckets:
+            self.buckets = None
+        return self
+
+
+class AxisSemanticsSpec(BaseModel):
+    """Optional advanced axis override for planner output semantics."""
+
+    role: str
+    metric: Optional[str] = None
+    label: Optional[str] = None
+    unit: Optional[str] = None
+    aggregation: Optional[str] = None
+    grain: Optional[str] = None
+
+    @field_validator("role")
+    def validate_role(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in AxisRoleType:
+            raise ValueError(f"{v} is not a valid axis role. Allowed: {AxisRoleType}")
+        return v_norm
+
+    @field_validator("aggregation")
+    def validate_aggregation(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        if v_norm not in MeasureType:
+            raise ValueError(f"{v} is not a valid aggregation. Allowed: {MeasureType}")
+        return v_norm
+
+    @field_validator("grain")
+    def validate_grain(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        if v_norm not in TIME_INTERVALS:
+            raise ValueError(f"{v} is not a valid axis grain. Allowed: {sorted(TIME_INTERVALS)}")
+        return v_norm
+
+    @field_validator("metric")
+    def validate_metric(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v_norm = (v or "").strip().upper()
+        allowed_values = _enum_allowed_values(MetricType)
+        if v_norm not in allowed_values:
+            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
+        return v_norm
+
+
+class AnalysisSemanticsSpec(BaseModel):
+    """Planner-facing semantic analysis contract for a chart request."""
+
+    intent: str
+    measure: Optional[MeasureSemanticsSpec] = None
+    splits: Optional[List[SplitSpec]] = None
+    time: Optional[TimeSemanticsSpec] = None
+    x_axis: Optional[AxisSemanticsSpec] = Field(default=None, alias="xAxis")
+    y_axis: Optional[AxisSemanticsSpec] = Field(default=None, alias="yAxis")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("intent")
+    def validate_intent(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        if v_norm not in AnalysisIntentType:
+            raise ValueError(f"{v} is not a valid analysis intent. Allowed: {AnalysisIntentType}")
+        return v_norm
+
+
 class DataOriginSpec(BaseModel):
     """Data origin scope for a metric/chart query."""
 
@@ -659,17 +849,17 @@ class ChartSpec(BaseModel):
     Attributes:
         chart_type: The chart type (must be in ChartType).
         filters: Optional chart-level filters applied to all metrics/series.
-        group_by: Optional chart-level groupings applied to all metrics/series.
+        semantics: Explicit semantic intent, splits, time, and measure metadata.
         metrics: List of metrics to include in the chart.
     """
 
     chart_type: str  # Should be a value from ChartType
+    semantics: Optional[AnalysisSemanticsSpec] = None
     filters: Optional[FilterNode] = None
-    group_by: Optional[List[GroupBySpec]] = None
     metrics: List[MetricSpec]
     numeric_resolution: Optional[NumericResolutionSpec] = Field(default=None, alias="numericResolution")
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     @field_validator("chart_type")
     def validate_chart_type(cls, v: str) -> str:
@@ -679,65 +869,11 @@ class ChartSpec(BaseModel):
         return v_norm
 
     @model_validator(mode="after")
-    def validate_chart_level_groupby(self) -> "ChartSpec":
-        """Validate chart-level group_by and filters.
-
-        Rules enforced:
-        - No duplicate GroupBy of the same exact spec.
-        - At most one GroupBySex and one GroupByStrokeType.
-        - At most one GroupByAge and one GroupByNIHSS.
-        - GroupByBoolean: at most one per boolean_type.
-        - GroupByCanonicalField: no duplicates of the same field (multiple distinct canonical fields are allowed).
-        """
-        gb = self.group_by or []
-        if not gb:
+    def validate_chart_level_semantics(self) -> "ChartSpec":
+        if self.semantics is None:
             return self
-
-        seen_specs: set[GroupBySpec] = set()
-        sex_count = 0
-        stroke_count = 0
-        age_count = 0
-        nihss_count = 0
-        time_count = 0
-        boolean_by_type: dict[str, int] = {}
-        canonical_fields: set[str] = set()
-
-        for g in gb:
-            if g in seen_specs:
-                raise ValueError("Duplicate groupBy spec detected in chart.group_by; remove duplicates.")
-            seen_specs.add(g)
-
-            if isinstance(g, GroupBySex):
-                sex_count += 1
-                if sex_count > 1:
-                    raise ValueError("Only one GroupBySex is allowed per chart.")
-            elif isinstance(g, GroupByStrokeType):
-                stroke_count += 1
-                if stroke_count > 1:
-                    raise ValueError("Only one GroupByStrokeType is allowed per chart.")
-            elif isinstance(g, GroupByAge):
-                age_count += 1
-                if age_count > 1:
-                    raise ValueError("Only one GroupByAge is allowed per chart.")
-            elif isinstance(g, GroupByNIHSS):
-                nihss_count += 1
-                if nihss_count > 1:
-                    raise ValueError("Only one GroupByNIHSS is allowed per chart.")
-            elif isinstance(g, GroupByTime):
-                time_count += 1
-                if time_count > 1:
-                    raise ValueError("Only one GroupByTime is allowed per chart.")
-            elif isinstance(g, GroupByBoolean):
-                boolean_by_type[g.boolean_type] = boolean_by_type.get(g.boolean_type, 0) + 1
-            elif isinstance(g, GroupByCanonicalField):
-                if g.field in canonical_fields:
-                    raise ValueError("Duplicate GroupByCanonicalField for the same field is not allowed.")
-                canonical_fields.add(g.field)
-
-        for btype, count in boolean_by_type.items():
-            if count > 1:
-                raise ValueError(f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}').")
-
+        if self.semantics.measure is None:
+            raise ValueError("Chart semantics.measure is required when semantics is present.")
         return self
 
 
@@ -764,53 +900,14 @@ class StatisticalTestSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_test_groupby(self) -> "StatisticalTestSpec":
-        """Ensure no duplicate group_by specs and single-instance constraints similar to charts.
-
-        - Only one GroupBySex / GroupByStrokeType / GroupByAge / GroupByNIHSS per test.
-        - GroupByBoolean: only one per boolean_type.
-        - Allow multiple distinct GroupByCanonicalField but no duplicates of same field.
-        """
+        """Statistical tests must use explicit metric cohorts, not chart-like grouping semantics."""
         gb = self.group_by or []
         if not gb:
             return self
 
-        seen: set[GroupBySpec] = set()
-        sex = stroke = age = nihss = time = 0
-        boolean_types: dict[str, int] = {}
-        canonical_fields: set[str] = set()
-        for g in gb:
-            if g in seen:
-                raise ValueError("Duplicate group_by spec in statistical test.")
-            seen.add(g)
-            if isinstance(g, GroupBySex):
-                sex += 1
-                if sex > 1:
-                    raise ValueError("Only one GroupBySex allowed in a statistical test.")
-            elif isinstance(g, GroupByStrokeType):
-                stroke += 1
-                if stroke > 1:
-                    raise ValueError("Only one GroupByStrokeType allowed in a statistical test.")
-            elif isinstance(g, GroupByAge):
-                age += 1
-                if age > 1:
-                    raise ValueError("Only one GroupByAge allowed in a statistical test.")
-            elif isinstance(g, GroupByNIHSS):
-                nihss += 1
-                if nihss > 1:
-                    raise ValueError("Only one GroupByNIHSS allowed in a statistical test.")
-            elif isinstance(g, GroupByTime):
-                time += 1
-                if time > 1:
-                    raise ValueError("Only one GroupByTime allowed in a statistical test.")
-            elif isinstance(g, GroupByBoolean):
-                boolean_types[g.boolean_type] = boolean_types.get(g.boolean_type, 0) + 1
-            elif isinstance(g, GroupByCanonicalField):
-                if g.field in canonical_fields:
-                    raise ValueError("Duplicate GroupByCanonicalField for same field in statistical test.")
-                canonical_fields.add(g.field)
-        for bt, ct in boolean_types.items():
-            if ct > 1:
-                raise ValueError(f"Duplicate GroupByBoolean for boolean_type '{bt}' in statistical test.")
+        raise ValueError(
+            "Statistical tests do not support group_by. Define explicit cohorts via metric-level origins/filters."
+        )
         return self
 
 

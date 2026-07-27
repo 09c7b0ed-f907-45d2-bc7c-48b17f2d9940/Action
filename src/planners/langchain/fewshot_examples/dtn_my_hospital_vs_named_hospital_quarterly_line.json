@@ -1,0 +1,83 @@
+{
+  "category": "cross_hospital",
+  "user_utterance": "Compare my dtn per quarter with army alhama de murcia hospital using a line chart",
+  "entities_detected": {
+    "hospital_scope_reference": [
+      "my"
+    ],
+    "metric": [
+      "DTN"
+    ],
+    "hospital_name": [
+      "Army Alhama de Murcia Hospital"
+    ],
+    "chart_type": [
+      "LINE"
+    ],
+    "group_by": [
+      "QUARTER",
+      "HOSPITAL"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "MEDIAN",
+            "percentile": null
+          },
+          "splits": null,
+          "time": {
+            "grain": "QUARTER",
+            "window": null,
+            "include_partial": null
+          },
+          "x_axis": {
+            "role": "TIME",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEDIAN",
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "label": "My hospital",
+              "country_code": null
+            }
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "provider_name",
+              "value": "Army Alhama de Murcia Hospital",
+              "label": "Army Alhama de Murcia Hospital",
+              "country_code": null
+            }
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

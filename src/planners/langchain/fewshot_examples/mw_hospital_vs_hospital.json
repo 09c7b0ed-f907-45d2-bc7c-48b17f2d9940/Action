@@ -1,0 +1,51 @@
+{
+  "category": "statistical_tests",
+  "user_utterance": "Is there a significant difference in DTN between City Stroke Center and University Hospital?",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "scope": [
+      "provider_name"
+    ],
+    "provider_name": [
+      "City Stroke Center",
+      "University Hospital"
+    ],
+    "statistical_test_type": [
+      "MANN_WHITNEY_U_TEST"
+    ]
+  },
+  "assistant": {
+    "charts": null,
+    "statistical_tests": [
+      {
+        "test_type": "MANN_WHITNEY_U_TEST",
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "provider_name",
+              "value": "City Stroke Center",
+              "label": "City Stroke Center",
+              "country_code": null
+            }
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "provider_name",
+              "value": "University Hospital",
+              "label": "University Hospital",
+              "country_code": null
+            }
+          }
+        ],
+        "group_by": null,
+        "filters": null
+      }
+    ]
+  }
+}

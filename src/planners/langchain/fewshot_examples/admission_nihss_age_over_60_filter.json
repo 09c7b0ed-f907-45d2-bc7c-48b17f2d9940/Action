@@ -1,0 +1,61 @@
+{
+  "category": "filters",
+  "user_utterance": "make me an admission nihss of only patients older than 60 years",
+  "entities_detected": {
+    "age": [
+      "60"
+    ],
+    "metric": [
+      "ADMISSION_NIHSS"
+    ],
+    "chart_type": [
+      "BAR"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": null,
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "ADMISSION_NIHSS",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": {
+          "operator": "GT",
+          "type": "AgeFilter",
+          "value": 60.0
+        },
+        "metrics": [
+          {
+            "metric": "ADMISSION_NIHSS",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

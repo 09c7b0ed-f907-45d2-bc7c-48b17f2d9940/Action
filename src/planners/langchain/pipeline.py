@@ -27,6 +27,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
+from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
 from src.util.logging_utils import bind_current_context, log_context
 
@@ -61,7 +62,7 @@ _PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
 _MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v3"
+_PLAN_CACHE_KEY_VERSION = "v4"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
@@ -114,32 +115,6 @@ def _extract_json_block(text: str) -> str:
     return candidate[start : end + 1]
 
 
-def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
-    """Reject ambiguous planner output instead of auto-correcting it.
-
-    Empty dict items in group_by (e.g., group_by=[{}]) can be coerced by the
-    schema Union into unintended groupings. We fail fast so retry feedback forces
-    the model to return an explicit valid group_by spec or null.
-    """
-    charts_any = payload.get("charts")
-    if not isinstance(charts_any, list):
-        return
-    chart_entries = cast(List[Any], charts_any)
-
-    for chart_idx, chart_any in enumerate(chart_entries):
-        if not isinstance(chart_any, dict):
-            continue
-        chart = cast(Dict[str, Any], chart_any)
-        group_by_any = chart.get("group_by")
-        if not isinstance(group_by_any, list):
-            continue
-        group_by_entries = cast(List[Any], group_by_any)
-
-        for gb_idx, item in enumerate(group_by_entries):
-            if isinstance(item, dict) and not item:
-                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
-
-
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     import json
 
@@ -147,7 +122,6 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
-        _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -155,8 +129,20 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
-    _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
+
+
+def _assert_required_semantics(plan: AnalysisPlan) -> None:
+    charts = plan.charts or []
+    for idx, chart in enumerate(charts):
+        if chart.semantics is None:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}] is missing required semantics"
+            )
+        if chart.semantics.measure is None:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}].semantics.measure is required"
+            )
 
 
 def get_schema_description(model: Type[Any]) -> str:
@@ -382,7 +368,15 @@ def _intent_features(text: str) -> set[str]:
     return features
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> float:
+class MatchScoreBreakdown(TypedDict):
+    token_overlap: float
+    entity_key_overlap: float
+    entity_value_overlap: float
+    intent_overlap: float
+    total: float
+
+
+def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> MatchScoreBreakdown:
     query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
     query_tokens = _tokenize(query_text)
     ex_text = example.get("user", "")
@@ -405,7 +399,13 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     example_intent = _intent_features(ex_text)
     intent_score = float(len(query_intent & example_intent)) * _FEWSHOT_INTENT_WEIGHT
 
-    return token_overlap_score + entity_key_score + entity_value_score + intent_score
+    return {
+        "token_overlap": token_overlap_score,
+        "entity_key_overlap": entity_key_score,
+        "entity_value_overlap": entity_value_score,
+        "intent_overlap": intent_score,
+        "total": token_overlap_score + entity_key_score + entity_value_score + intent_score,
+    }
 
 
 def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
@@ -413,7 +413,7 @@ def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items
         return []
 
     capped = max(1, min(max_items, len(few_shot_examples)))
-    scored = [(_match_score(question, entities, ex), idx, ex) for idx, ex in enumerate(few_shot_examples)]
+    scored = [(_match_score(question, entities, ex)["total"], idx, ex) for idx, ex in enumerate(few_shot_examples)]
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
 
     selected = [item[2] for item in scored[:capped]]
@@ -421,6 +421,24 @@ def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items
     if scored and scored[0][0] <= 0:
         return few_shot_examples[:capped]
     return selected
+
+
+def score_few_shot_examples(question: str, entities: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Scores every loaded few-shot example against a candidate query, using
+    the exact same _match_score/_select_few_shot_examples the live planner
+    runs -- exposed via a debug HTTP route (see rasa_sdk_plugins) so "why
+    wasn't my example picked" has a real answer instead of a guess at the
+    scoring weights. Reuses _select_few_shot_examples itself for the
+    "selected" flag rather than re-deriving the all-zero-scores tie-break
+    rule here, so the preview can't drift out of sync with actual selection.
+    """
+    selected_names = {ex["name"] for ex in _select_few_shot_examples(question, entities, _MAX_FEW_SHOTS)}
+    scored = [
+        {"name": ex["name"], "selected": ex["name"] in selected_names, **_match_score(question, entities, ex)}
+        for ex in few_shot_examples
+    ]
+    scored.sort(key=lambda item: item["total"], reverse=True)
+    return scored
 
 
 def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
@@ -443,28 +461,7 @@ def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
 
 plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
     [
-        (
-            "system",
-            "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
-            "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
-            "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
-            "When scope is semantic (my hospital, hospital name, provider-group name, country average, all accessible), prefer metric-level originScope instead of dataOrigin. "
-            "Use originScope.scopeType from: mine, provider_name, provider_group_name, country_code, country_average, all_accessible, provider_id, provider_group_id. "
-            "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
-            "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
-            "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
-            "Numeric resolution guidance: put numeric range/bucketing controls at chart level in numericResolution (valueDomain/bucketing), never under metric objects. "
-            "Use numericResolution.valueDomain for explicit lower/upper bounds and numericResolution.bucketing for bucketCount/bucketSize when the user asks for binning granularity. "
-            "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
-            "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
-            "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
-            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
-            "Time grouping guidance: When group_by entity is quarter or quarterly, use GroupByTime with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR. Never emit an empty object for group_by entries."
-            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop group_by or other dimensions unless explicitly asked. "
-            "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
-            "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter.",
-        ),
+        ("system", load_prompt_text("plan_system", expected_variables=frozenset({"language"}))),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
@@ -623,6 +620,7 @@ def generate_analysis_plan(
 
             try:
                 result = _coerce_analysis_plan(raw_result)
+                _assert_required_semantics(result)
                 break
             except Exception as exc:
                 last_error = exc

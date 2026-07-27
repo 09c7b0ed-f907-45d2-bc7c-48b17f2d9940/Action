@@ -1,0 +1,61 @@
+{
+  "category": "splits",
+  "user_utterance": "Show me a line graph of DTN grouped by first contact place",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "LINE"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN",
+            "percentile": null
+          },
+          "splits": [
+            {
+              "kind": "CANONICAL",
+              "field": "FIRST_CONTACT_PLACE",
+              "categories": null,
+              "buckets": null
+            }
+          ],
+          "time": null,
+          "x_axis": {
+            "role": "CATEGORY",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEDIAN",
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}
