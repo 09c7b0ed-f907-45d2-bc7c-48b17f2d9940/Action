@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from src.shared import ssot_loader
 from src.util import env as env_util
 from src.util.logging_utils import log_context
 
@@ -701,28 +702,15 @@ class AnalyticsCenterClient:
         raw = (country_input or "").strip()
         if not raw:
             return None
-        if len(raw) == 2 and raw.isalpha():
-            return raw.upper()
 
-        aliases: Dict[str, str] = {
-            "spain": "ES",
-            "espana": "ES",
-            "españa": "ES",
-            "mexico": "MX",
-            "méxico": "MX",
-            "czech republic": "CZ",
-            "czechia": "CZ",
-            "united kingdom": "GB",
-            "uk": "GB",
-            "great britain": "GB",
-            "united states": "US",
-            "usa": "US",
-            "u.s.a": "US",
-        }
+        ssot_canonical = ssot_loader.resolve_country_code(raw)
+        if ssot_canonical:
+            return ssot_canonical
+
+        # SSOT/CountryType.yml doesn't recognize it -- fall back to an exact
+        # match against whatever this deployment's Analytics Center backend
+        # actually has data for.
         normalized = raw.lower()
-        if normalized in aliases:
-            return aliases[normalized]
-
         countries_page = self.list_countries(
             user_sub=user_sub,
             limit=300,
