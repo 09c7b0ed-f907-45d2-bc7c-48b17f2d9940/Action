@@ -40,6 +40,19 @@ _FEWSHOT_ENTITY_KEY_WEIGHT = 6.0
 _FEWSHOT_ENTITY_VALUE_WEIGHT = 10.0
 _FEWSHOT_INTENT_WEIGHT = 8.0
 
+# Shared with request_orchestrator.py's _has_statistical_test_signal() so both
+# places that heuristically detect "does this question want a stat test"
+# agree on the same phrase list, instead of maintaining two that can drift.
+_STAT_TEST_KEYWORDS = (
+    "statistical test",
+    "mann-whitney",
+    "mann whitney",
+    "compare",
+    "significant",
+    "significance",
+    "difference between",
+)
+
 _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "chart_line": ["line", "trend"],
     "chart_bar": ["bar", "column"],
@@ -47,13 +60,7 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "distribution": ["distribution", "histogram", "violin", "box"],
     "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
     "group_by": [" by ", "grouped by", "split by"],
-    "stat_test": [
-        "compare",
-        "mann-whitney",
-        "statistical test",
-        "significant",
-        "difference between",
-    ],
+    "stat_test": list(_STAT_TEST_KEYWORDS),
 }
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
