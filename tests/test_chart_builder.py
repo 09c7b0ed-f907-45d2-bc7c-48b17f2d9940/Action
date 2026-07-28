@@ -1,8 +1,16 @@
 import unittest
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
-from src.domain.langchain.schema import ChartSpec, MetricSpec
-from src.executors.mapping.chart_builder import build_chart_dto
+from src.domain.langchain.schema import ChartSpec, GroupBySex, GroupByStrokeType, MetricSpec
+from src.executors.mapping.chart_builder import (
+    _axis_label_for_dimension,
+    _dimension_label,
+    _format_operator,
+    build_chart_dto,
+)
+from src.executors.planning.query_compiler import Dimension
+from src.executors.planning.ssot_metric_defaults import get_histogram_axes
+from src.shared.ssot_loader import get_canonical_display_name
 
 
 class ChartBuilderTests(unittest.TestCase):
@@ -41,6 +49,39 @@ class ChartBuilderTests(unittest.TestCase):
         self.assertEqual(x_axis.type.value, "linear")
         self.assertEqual(y_axis.label, "Cases")
         self.assertEqual(y_axis.type.value, "linear")
+
+
+class OperatorSymbolTests(unittest.TestCase):
+    def test_format_operator_matches_ssot(self) -> None:
+        expected = {"GE": ">=", "LE": "<=", "LT": "<", "GT": ">", "EQ": "=", "NE": "!="}
+        for code, symbol in expected.items():
+            self.assertEqual(_format_operator(code), symbol)
+
+
+class DimensionLabelSsotConsistencyTests(unittest.TestCase):
+    # Sex/StrokeType axis labels used to be hardcoded ("Sex", "Stroke Type");
+    # they now come from SSOT like every other dimension label in this module
+    # (NIHSS, Age, generic canonical fields already did). This just pins the
+    # label to whatever SSOT currently says, so a future SSOT wording change
+    # is a deliberate, visible test update rather than a silent surprise.
+    def test_axis_label_for_sex_dimension_comes_from_ssot(self) -> None:
+        dimension = Dimension(GroupBySex(categories=None))
+        expected = get_canonical_display_name("SEX_TYPE")
+        self.assertEqual(_axis_label_for_dimension(dimension), expected)
+        self.assertEqual(_dimension_label(dimension), expected)
+
+    def test_axis_label_for_stroke_type_dimension_comes_from_ssot(self) -> None:
+        dimension = Dimension(GroupByStrokeType(categories=None))
+        expected = get_canonical_display_name("STROKE_TYPE")
+        self.assertEqual(_axis_label_for_dimension(dimension), expected)
+        self.assertEqual(_dimension_label(dimension), expected)
+
+
+class HistogramAxesTests(unittest.TestCase):
+    def test_dtn_histogram_axis_no_longer_needs_a_hardcoded_override(self) -> None:
+        x_axis, y_axis = get_histogram_axes("DTN", x_min=0, x_max=520)
+        self.assertIn("minutes", x_axis.label)
+        self.assertEqual(y_axis.label, "Cases")
 
 
 if __name__ == "__main__":

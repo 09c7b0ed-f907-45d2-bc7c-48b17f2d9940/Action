@@ -627,6 +627,17 @@ def get_metric_display_name(metric_code: str) -> str:
     return code
 
 
+def get_operator_symbol(operator_code: str) -> str:
+    """Return SSOT-preferred display symbol for a comparison operator (first synonym), fallback to canonical code."""
+    code = (operator_code or "").strip().upper()
+    for item in _load_yaml("OperatorType.yml"):
+        if item.get("canonical") == code:
+            symbol = _first_synonym(item)
+            if symbol:
+                return symbol
+    return code
+
+
 def get_enum_option_label(metric_code: str, key: str) -> Optional[str]:
     """Return preferred label for an enum option of a given metric from SSOT.
 
