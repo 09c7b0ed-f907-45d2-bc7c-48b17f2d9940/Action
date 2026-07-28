@@ -5,7 +5,7 @@ from uuid import uuid4
 from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_metric_error
-from src.actions.helpers.metric import extract_kpi, pick_description, resolve_language, suggest_metrics
+from src.actions.helpers.metric import extract_metric, pick_description, resolve_language, suggest_metrics
 from src.actions.i18n import translate
 from src.shared import ssot_loader
 from src.util import env as env_util
@@ -76,9 +76,9 @@ def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
 class ActionExplainMetric(Action):  # pyright: ignore
     """Explain a metric/KPI based on MetricType.yml and language.
 
-    The metric is resolved from the latest user message `kpi` entity (or the
-    `kpi` slot as a fallback), normalized using the same rules as the SSOT
-    lookup. The response uses the localized description from the SSOT
+    The metric is resolved from the latest user message `metric` entity (or
+    the `metric` slot as a fallback), normalized using the same rules as the
+    SSOT lookup. The response uses the localized description from the SSOT
     `descriptions` block, falling back to English or the first available
     language.
     """
@@ -97,12 +97,12 @@ class ActionExplainMetric(Action):  # pyright: ignore
             try:
                 language = resolve_language(tracker)
 
-                raw_kpi = extract_kpi(tracker)
-                if not raw_kpi:
+                raw_metric = extract_metric(tracker)
+                if not raw_metric:
                     dispatcher.utter_message(text=translate("action.metric.missing_metric", language=language))
                     return []
 
-                norm_key = ssot_loader.normalize_metric_text_key(raw_kpi)
+                norm_key = ssot_loader.normalize_metric_text_key(raw_metric)
                 if not norm_key:
                     dispatcher.utter_message(text=translate("action.metric.metric_not_understood", language=language))
                     return []

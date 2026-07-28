@@ -16,7 +16,7 @@ class SsotLoaderTests(unittest.TestCase):
                     "en": ["clot removal", "mechanical thrombectomy"],
                     "el": ["αφαίρεση θρόμβου"],
                 },
-                "description": {
+                "descriptions": {
                     "en": "Description for THROMBECTOMY",
                     "el": "Περιγραφή για ΘΡΟΜΒΕΚΤΟΜΙΑ",
                 },
@@ -35,8 +35,20 @@ class SsotLoaderTests(unittest.TestCase):
             "Περιγραφή για ΘΡΟΜΒΕΚΤΟΜΙΑ",
         )
 
+    def test_metric_metadata_has_real_descriptions_from_disk(self) -> None:
+        # Regression guard: MetricType.yml uses "descriptions" (plural), unlike
+        # every other SSOT file which uses "description" (singular). A mock-only
+        # test can't catch a mismatch against the real key -- this reads the
+        # actual on-disk file to make sure descriptions are non-empty.
+        ssot_loader.get_metric_metadata.cache_clear()
+        metadata = ssot_loader.get_metric_metadata()
+        self.assertIn("DTN", metadata)
+        self.assertIn("descriptions", metadata["DTN"])
+        self.assertTrue(metadata["DTN"]["descriptions"].get("en"))
+
     def tearDown(self) -> None:
         ssot_loader.get_metric_text_lookup.cache_clear()
+        ssot_loader.get_metric_metadata.cache_clear()
 
 
 class ResolveScopeTests(unittest.TestCase):
