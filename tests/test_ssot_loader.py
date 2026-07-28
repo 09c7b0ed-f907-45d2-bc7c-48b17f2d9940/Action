@@ -82,5 +82,41 @@ class GetOperatorSymbolTests(unittest.TestCase):
         self.assertEqual(ssot_loader.get_operator_symbol("NOT_REAL"), "NOT_REAL")
 
 
+class ResolveCountryCodeTests(unittest.TestCase):
+    _ITEMS: List[Dict[str, Any]] = [
+        {
+            "canonical": "CZ",
+            "synonyms": {"en": ["Czechia", "Czech Republic"], "cs": ["Česko"]},
+        },
+        {
+            "canonical": "ES",
+            "synonyms": {"en": ["Spain", "Espana", "España"], "cs": ["Španělsko"]},
+        },
+    ]
+
+    def setUp(self) -> None:
+        ssot_loader._canonical_lookup.cache_clear()
+        self._patcher = mock.patch.object(ssot_loader, "_load_yaml", return_value=self._ITEMS)
+        self._patcher.start()
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+        ssot_loader._canonical_lookup.cache_clear()
+
+    def test_resolves_bare_iso_code(self) -> None:
+        self.assertEqual(ssot_loader.resolve_country_code("cz"), "CZ")
+
+    def test_resolves_english_synonym(self) -> None:
+        self.assertEqual(ssot_loader.resolve_country_code("Czech Republic"), "CZ")
+        self.assertEqual(ssot_loader.resolve_country_code("Czechia"), "CZ")
+
+    def test_resolves_diacritic_variant(self) -> None:
+        self.assertEqual(ssot_loader.resolve_country_code("España"), "ES")
+        self.assertEqual(ssot_loader.resolve_country_code("Espana"), "ES")
+
+    def test_unknown_country_returns_none(self) -> None:
+        self.assertIsNone(ssot_loader.resolve_country_code("Narnia"))
+
+
 if __name__ == "__main__":
     unittest.main()
