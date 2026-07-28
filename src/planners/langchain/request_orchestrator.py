@@ -14,7 +14,11 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
-from src.planners.langchain.pipeline import _PLANNER_REQUEST_TIMEOUT_SECONDS, generate_analysis_plan
+from src.planners.langchain.pipeline import (
+    _PLANNER_REQUEST_TIMEOUT_SECONDS,
+    _STAT_TEST_KEYWORDS,
+    generate_analysis_plan,
+)
 from src.planners.langchain.prompt_loader import load_prompt_text
 from src.shared import ssot_loader
 from src.util import env as env_util
@@ -119,16 +123,6 @@ _STATISTICAL_COHORT_ENTITY_KEYS = {
     "age",
     "mine",
 }
-
-_STAT_TEST_KEYWORDS = (
-    "statistical test",
-    "mann-whitney",
-    "mann whitney",
-    "compare",
-    "significant",
-    "significance",
-    "difference between",
-)
 
 _PROVIDER_GROUP_HINTS = (
     "provider group",

@@ -16,7 +16,7 @@ class SsotLoaderTests(unittest.TestCase):
                     "en": ["clot removal", "mechanical thrombectomy"],
                     "el": ["αφαίρεση θρόμβου"],
                 },
-                "description": {
+                "descriptions": {
                     "en": "Description for THROMBECTOMY",
                     "el": "Περιγραφή για ΘΡΟΜΒΕΚΤΟΜΙΑ",
                 },
@@ -35,8 +35,38 @@ class SsotLoaderTests(unittest.TestCase):
             "Περιγραφή για ΘΡΟΜΒΕΚΤΟΜΙΑ",
         )
 
+    def test_metric_metadata_has_real_descriptions_from_disk(self) -> None:
+        # Regression guard: MetricType.yml uses "descriptions" (plural), unlike
+        # every other SSOT file which uses "description" (singular). A mock-only
+        # test can't catch a mismatch against the real key -- this reads the
+        # actual on-disk file to make sure descriptions are non-empty.
+        ssot_loader.get_metric_metadata.cache_clear()
+        metadata = ssot_loader.get_metric_metadata()
+        self.assertIn("DTN", metadata)
+        self.assertIn("descriptions", metadata["DTN"])
+        self.assertTrue(metadata["DTN"]["descriptions"].get("en"))
+
     def tearDown(self) -> None:
         ssot_loader.get_metric_text_lookup.cache_clear()
+        ssot_loader.get_metric_metadata.cache_clear()
+
+
+class ResolveScopeTests(unittest.TestCase):
+    def test_resolves_all_variants(self) -> None:
+        for value in ["all", "All Hospitals", "all sites", "ALL PROVIDERS"]:
+            self.assertEqual(ssot_loader.resolve_scope(value), "ALL")
+
+    def test_resolves_mine_variants(self) -> None:
+        for value in ["mine", "my hospital", "our centre", "MY SITE"]:
+            self.assertEqual(ssot_loader.resolve_scope(value), "MINE")
+
+    def test_resolves_non_english_variants(self) -> None:
+        # These had no locale coverage at all before ScopeType.yml existed.
+        self.assertEqual(ssot_loader.resolve_scope("moje nemocnice"), "MINE")
+        self.assertEqual(ssot_loader.resolve_scope("όλα"), "ALL")
+
+    def test_unknown_scope_returns_none(self) -> None:
+        self.assertIsNone(ssot_loader.resolve_scope("St. Mary's Hospital"))
 
 
 class ResolveCountryCodeTests(unittest.TestCase):

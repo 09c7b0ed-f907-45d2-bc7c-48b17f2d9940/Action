@@ -29,7 +29,7 @@ def resolve_language(tracker: Any) -> str:
     return primary or "en"
 
 
-def extract_kpi(tracker: Any) -> Optional[str]:
+def extract_metric(tracker: Any) -> Optional[str]:
     tracker_any: Any = tracker
     latest: Dict[str, Any] = tracker_any.latest_message or {}
     entities_any: Any = latest.get("entities")
@@ -39,12 +39,12 @@ def extract_kpi(tracker: Any) -> Optional[str]:
             if not isinstance(ent_any, dict):
                 continue
             ent = cast(Dict[str, Any], ent_any)
-            if ent.get("entity") == "kpi":
+            if ent.get("entity") == "metric":
                 val = ent.get("value")
                 if isinstance(val, str) and val.strip():
                     return val.strip()
 
-    slot_val_any: Any = tracker_any.get_slot("kpi")
+    slot_val_any: Any = tracker_any.get_slot("metric")
     if isinstance(slot_val_any, str) and slot_val_any.strip():
         return slot_val_any.strip()
 
