@@ -84,6 +84,30 @@ def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
     return None
 
 
+def _build_pagination_buttons(*, offset: int, limit: int, total_count: int, language: str) -> List[Dict[str, str]]:
+    buttons: List[Dict[str, str]] = []
+
+    if offset > 0:
+        previous_offset = max(offset - limit, 0)
+        buttons.append(
+            {
+                "title": translate("action.hospitals.previous_page_button", language=language),
+                "payload": f"list hospitals {previous_offset}",
+            }
+        )
+
+    next_offset = offset + limit
+    if next_offset < total_count:
+        buttons.append(
+            {
+                "title": translate("action.hospitals.next_page_button", language=language),
+                "payload": f"list hospitals {next_offset}",
+            }
+        )
+
+    return buttons
+
+
 class ActionListHospitals(Action):  # pyright: ignore
     """List hospitals/providers available for comparison."""
 
@@ -157,12 +181,16 @@ class ActionListHospitals(Action):  # pyright: ignore
                     names = [n for n in names if needle in n.lower()]
 
                 if not names:
-                    no_match_msg = translate("action.hospitals.no_matches_with_hint", language=language) if isinstance(name_filter, str) and name_filter.strip() else translate("action.hospitals.no_matches", language=language)
+                    no_match_msg = (
+                        translate("action.hospitals.no_matches_with_hint", language=language)
+                        if isinstance(name_filter, str) and name_filter.strip()
+                        else translate("action.hospitals.no_matches", language=language)
+                    )
                     dispatcher.utter_message(text=no_match_msg)
                     return []
 
-                preview = ", ".join(names[:10])
-                more_count = max(len(names) - 10, 0)
+                page_size = max(1, int(limit))
+                preview = ", \n".join(names[:page_size])
                 criteria: List[str] = []
                 country_code = filters.get("country_code")
                 sort = filters.get("sort")
@@ -211,17 +239,17 @@ class ActionListHospitals(Action):  # pyright: ignore
                         },
                     )
 
-                more_suffix = (
-                    translate(
-                        "action.hospitals.more_in_page",
-                        language=language,
-                        params={"more_count": more_count},
-                    )
-                    if more_count
-                    else ""
+                text_message = prefix + f"\n{preview}."
+                buttons = _build_pagination_buttons(
+                    offset=offset,
+                    limit=limit,
+                    total_count=total_count,
+                    language=language,
                 )
-                text_message = prefix + f" {preview}." + more_suffix
-                dispatcher.utter_message(text=text_message)
+                message_payload: Dict[str, Any] = {"text": text_message}
+                if buttons:
+                    message_payload["buttons"] = buttons
+                dispatcher.utter_message(**message_payload)
                 return []
             except Exception as exc:
                 logger.exception(

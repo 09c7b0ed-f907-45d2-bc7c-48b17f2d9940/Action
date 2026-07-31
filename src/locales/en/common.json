@@ -36,6 +36,8 @@
       "no_matches_with_hint": "I couldn't find any hospitals matching your filters. Try a shorter or less specific name.",
       "summary_with_name_filter": "I found {matched_count} matching hospitals on this page (search='{search}', offset={offset}, limit={limit}); total providers before name filter: {total_count}.",
       "summary_general": "I found {total_count} hospitals{criteria_text}; showing {shown_start}-{shown_end}.",
+      "previous_page_button": "Previous",
+      "next_page_button": "Next",
       "criteria_country": "country={country}",
       "criteria_sort": "sort={sort}",
       "more_in_page": " (+{more_count} more in this page)",

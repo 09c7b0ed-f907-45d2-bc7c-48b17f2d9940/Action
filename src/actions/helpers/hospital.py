@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, cast
 
+_HOSPITALS_PAGE_SIZE = 50
+
 
 def extract_hospital_filters(tracker: Any) -> Dict[str, Any]:
     tracker_any: Any = tracker
@@ -86,14 +88,28 @@ def extract_hospital_filters(tracker: Any) -> Dict[str, Any]:
 
     limit_val = first_int(
         metadata.get("limit"),
+        entities_by_name.get("limit"),
+        entities_by_name.get("page_size"),
         tracker_any.get_slot("limit"),
     )
     offset_val = first_int(
         metadata.get("offset"),
+        metadata.get("start"),
+        metadata.get("from"),
+        entities_by_name.get("offset"),
+        entities_by_name.get("start"),
+        entities_by_name.get("from"),
+        entities_by_name.get("skip"),
         tracker_any.get_slot("offset"),
     )
 
-    limit = 50 if limit_val is None else max(1, min(limit_val, 200))
+    # Some NLU pipelines route naked numbers like "list hospitals 100" into a
+    # `limit` slot. We use fixed page size and treat that value as the desired
+    # start offset when no explicit offset is available.
+    if offset_val is None and limit_val is not None:
+        offset_val = limit_val
+
+    limit = _HOSPITALS_PAGE_SIZE
     offset = 0 if offset_val is None else max(0, offset_val)
 
     return {
