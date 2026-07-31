@@ -33,6 +33,8 @@
       "no_matches_with_hint": "Δεν βρήκα νοσοκομεία που να ταιριάζουν με τα φίλτρα σας. Δοκιμάστε πιο σύντομο ή λιγότερο συγκεκριμένο όνομα.",
       "summary_with_name_filter": "Βρήκα {matched_count} νοσοκομεία που ταιριάζουν σε αυτή τη σελίδα (αναζήτηση='{search}', offset={offset}, limit={limit}); σύνολο παρόχων πριν από το φίλτρο ονόματος: {total_count}.",
       "summary_general": "Βρήκα {total_count} νοσοκομεία{criteria_text}; εμφανίζονται {shown_start}-{shown_end}.",
+      "previous_page_button": "Προηγούμενα",
+      "next_page_button": "Επόμενα",
       "criteria_country": "χώρα={country}",
       "criteria_sort": "ταξινόμηση={sort}",
       "more_in_page": " (+{more_count} ακόμη σε αυτή τη σελίδα)",

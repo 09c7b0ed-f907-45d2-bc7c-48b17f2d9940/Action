@@ -33,6 +33,8 @@
       "no_matches_with_hint": "Nenašel jsem žádné nemocnice odpovídající vašim filtrům. Zkuste kratší nebo méně specifický název.",
       "summary_with_name_filter": "Na této stránce jsem našel {matched_count} odpovídajících nemocnic (search='{search}', offset={offset}, limit={limit}); celkový počet poskytovatelů před filtrem názvu: {total_count}.",
       "summary_general": "Našel jsem {total_count} nemocnic{criteria_text}; zobrazuji {shown_start}-{shown_end}.",
+      "previous_page_button": "Předchozí",
+      "next_page_button": "Další",
       "criteria_country": "země={country}",
       "criteria_sort": "řazení={sort}",
       "more_in_page": " (+{more_count} dalších na této stránce)",
