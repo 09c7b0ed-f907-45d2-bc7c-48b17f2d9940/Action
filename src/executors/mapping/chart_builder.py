@@ -319,14 +319,14 @@ def _uses_distribution_axes(
     if chart_type_upper == ChartType.HISTOGRAM.value:
         return True
 
-    if chart_type_upper != ChartType.BAR.value or dimensions:
+    if chart_type_upper not in {ChartType.BAR.value, ChartType.LINE.value} or dimensions:
         return False
 
     has_points = False
     for item in series:
         for point in item.data:
             has_points = True
-            if _coerce_float(point.x) is None or _coerce_float(point.y) is None:
+            if not isinstance(point.x, (int, float)) or not isinstance(point.y, (int, float)):
                 return False
 
     return has_points
