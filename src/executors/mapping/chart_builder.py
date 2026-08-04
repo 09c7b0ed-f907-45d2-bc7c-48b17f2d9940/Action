@@ -62,6 +62,24 @@ def _quantile(sorted_values: List[float], q: float) -> float:
     return sorted_values[low] * (1.0 - weight) + sorted_values[high] * weight
 
 
+def _histogram_bin_width_from_points(points: List[Any]) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    deltas: List[float] = []
+    previous = _coerce_float(points[0].x)
+    for point in points[1:]:
+        current = _coerce_float(point.x)
+        delta = current - previous
+        if delta > 0:
+            deltas.append(delta)
+        previous = current
+
+    if not deltas:
+        return 0.0
+    return deltas[-1]
+
+
 def _dimension_label(dimension: Dimension) -> Optional[str]:
     if isinstance(dimension.spec, GroupByTime):
         grain = getattr(dimension.spec, "grain", None)
@@ -478,14 +496,21 @@ def build_chart_dto(
         bins: List[HistogramBin] = []
         source = series[0].data if series else []
         if source:
+            inferred_width = _histogram_bin_width_from_points(source)
             for idx, point in enumerate(source):
                 start = _coerce_float(point.x)
-                end = start
                 if idx + 1 < len(source):
                     end = _coerce_float(source[idx + 1].x)
+                else:
+                    end = start + inferred_width if inferred_width > 0 else start
                 freq = _coerce_float(point.y)
                 bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
-        return Histogram(metadata=metadata, data=bins, bin_count=max(1, len(bins)))
+        return Histogram(
+            metadata=metadata,
+            data=bins,
+            bin_count=max(1, len(bins)),
+            bin_width=inferred_width if source else None,
+        )
     if chart_type_upper == ChartType.BOX.value:
         values = sorted(_flatten_y_values(series))
         if not values:

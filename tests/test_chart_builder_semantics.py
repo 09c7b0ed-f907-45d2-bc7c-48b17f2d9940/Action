@@ -1,7 +1,6 @@
 import unittest
 
-from src.domain.dto.charts.types import ChartPoint
-from src.domain.dto.charts.types import ChartSeries
+from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.langchain import schema as S
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.planning.query_compiler import compile_chart_grouping
@@ -91,6 +90,38 @@ class ChartBuilderSemanticsTests(unittest.TestCase):
             )
 
         self.assertIn("Expected numeric chart value", str(err.exception))
+
+    def test_histogram_uses_consecutive_bin_intervals_for_final_bin(self) -> None:
+        chart = S.ChartSpec(
+            chart_type="HISTOGRAM",
+            metrics=[S.MetricSpec(metric="DTN")],
+            semantics=S.AnalysisSemanticsSpec(
+                intent="DISTRIBUTION",
+                measure=S.MeasureSemanticsSpec(type="DISTRIBUTION"),
+            ),
+        )
+
+        dto = build_chart_dto(
+            plan_chart=chart,
+            dimensions=[],
+            series=[
+                ChartSeries(
+                    name="DTN",
+                    data=[
+                        ChartPoint.model_construct(x=30, y=4),
+                        ChartPoint.model_construct(x=33, y=5),
+                        ChartPoint.model_construct(x=36, y=6),
+                        ChartPoint.model_construct(x=39, y=8),
+                    ],
+                )
+            ],
+            derived_axes=None,
+        )
+
+        self.assertEqual(len(dto.data), 4)
+        self.assertEqual(dto.data[-1].range_start, 39.0)
+        self.assertEqual(dto.data[-1].range_end, 42.0)
+        self.assertEqual(dto.bin_width, 3.0)
 
     def test_pie_chart_raises_on_non_numeric_slice_value(self) -> None:
         chart = S.ChartSpec(
