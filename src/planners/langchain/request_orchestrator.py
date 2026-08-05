@@ -42,12 +42,17 @@ class VisualizationRequestOutcome:
 
 
 _ORCHESTRATOR_ENABLED = env_util.env_flag("ACTIONS_LLM_REQUEST_ORCHESTRATOR_ENABLED", default=True)
-_ORCHESTRATOR_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TIMEOUT_SECONDS", default="10") or "10"
-_orchestrator_timeout_value = 10.0
+# This call shares the same underlying model/latency profile as plan
+# generation (see _PLANNER_REQUEST_TIMEOUT_SECONDS in pipeline.py), so a 10s
+# cap was too tight for the same reason -- it just failed more quietly here,
+# since a timeout falls through to the coarser fallback-to-plan path instead
+# of a loud per-attempt error.
+_ORCHESTRATOR_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TIMEOUT_SECONDS", default="20") or "20"
+_orchestrator_timeout_value = 20.0
 try:
     _orchestrator_timeout_value = max(1.0, float(_ORCHESTRATOR_TIMEOUT_RAW))
 except Exception:
-    _orchestrator_timeout_value = 10.0
+    _orchestrator_timeout_value = 20.0
 _ORCHESTRATOR_TIMEOUT_SECONDS = _orchestrator_timeout_value
 
 # Single source of truth for plan-generation retry count. Previously duplicated
@@ -64,13 +69,22 @@ _PLANNER_MAX_RETRIES = 2
 # (attempts * per-attempt budget), not just one attempt. It used to only account for
 # one, so on anything slow enough to need a retry, this outer wrapper killed the call
 # before generate_analysis_plan's own retry ever got a chance to run.
+#
+# Since the plan-critique pass (pipeline.py's _critique_plan), each attempt can make
+# TWO LLM calls -- the plan generation itself, then the critique review of it -- each
+# independently bounded by _PLANNER_REQUEST_TIMEOUT_SECONDS. This formula previously
+# still budgeted for one call per attempt, so a scenario whose plan legitimately needs
+# every retry (critique keeps finding real, distinct issues -- observed live for the
+# "10 line graphs" case) could exhaust this outer timeout entirely before the inner
+# loop's own attempts ran out, turning a slow-but-eventually-correct plan into a hard
+# failure instead.
 _PLAN_GENERATION_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_PLAN_GENERATION_TIMEOUT_SECONDS", default="") or ""
 try:
     _plan_generation_timeout_value = max(1.0, float(_PLAN_GENERATION_TIMEOUT_RAW))
 except Exception:
     _plan_generation_timeout_value = max(
         _ORCHESTRATOR_TIMEOUT_SECONDS,
-        _PLANNER_REQUEST_TIMEOUT_SECONDS * (_PLANNER_MAX_RETRIES + 1) + 10.0,
+        _PLANNER_REQUEST_TIMEOUT_SECONDS * (_PLANNER_MAX_RETRIES + 1) * 2 + 10.0,
     )
 _PLAN_GENERATION_TIMEOUT_SECONDS = _plan_generation_timeout_value
 
@@ -320,6 +334,85 @@ def _coerce_options(raw: Any) -> List[str]:
 def _is_missing_chart_type_only(missing_fields: List[str]) -> bool:
     normalized = [field.strip().lower() for field in missing_fields if field and field.strip()]
     return bool(normalized) and all(field == "chart_type" for field in normalized)
+
+
+# Required fields per decision_system.txt's own rules ("required fields are
+# metric and chart_type" / "...metric and statistical_test_type") where
+# "present in ENTITIES_JSON" is an unambiguous, objective presence check --
+# unlike e.g. "two distinct statistical cohorts", which needs judgment beyond
+# "some value exists" and is deliberately excluded here.
+_SELF_VERIFIABLE_REQUIRED_FIELDS = {"metric", "chart_type", "statistical_test_type"}
+
+# Any of these being present in ENTITIES_JSON is objective proof a request is
+# in-scope, not just a present "metric": Rasa only ever extracts these within
+# this domain's own SSOT-defined entity types, and this action only runs for
+# intents Rasa already classified as visualization-related in the first
+# place. Deliberately excludes generic/structural entities (limit, offset,
+# sort) that aren't themselves clinical-domain signals. Observed live: "show
+# only patients older than 60" (a bare age filter, no metric yet) got
+# rejected as out_of_scope with the message "This request is not related to
+# clinical stroke-care analytics" -- objectively false, it's a well-formed
+# partial clinical request missing a metric, which is a clarify.
+_SCOPE_PROVING_ENTITY_KEYS = {
+    "metric",
+    "chart_type",
+    "statistical_test_type",
+    "group_by",
+    "stroke_type",
+    "country_code",
+    "sex",
+    "age",
+    "nihss",
+    "hospital_name",
+    "provider_group_name",
+    "boolean_type",
+    "date",
+    "operator_type",
+    "hospital_scope_reference",
+    "group_id",
+}
+
+# decision_system.txt's own closed reason taxonomy: each value unambiguously
+# implies exactly one decision. Observed live (CVaLab): the decision stage
+# occasionally puts a reason value straight into the "decision" field (e.g.
+# {"decision": "ambiguous_request", ...} -- reproducible twice in a row for
+# the same input, not one-off noise, so a same-prompt retry alone doesn't
+# reliably recover it). Since each reason already tells us the decision the
+# model meant, this recovers losslessly rather than failing outright.
+_REASON_IMPLIES_DECISION: Dict[str, str] = {
+    "all_required_fields_present": "proceed",
+    "missing_required_fields": "clarify",
+    "ambiguous_request": "clarify",
+    "out_of_scope": "reject",
+    "invalid_date_format": "reject",
+    "insufficient_information": "reject",
+}
+
+
+def _entity_present(entities: Dict[str, Any], key: str) -> bool:
+    value = entities.get(key)
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(isinstance(item, str) and item.strip() for item in cast(List[Any], value))
+    return value is not None and value is not False
+
+
+def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, Any]) -> List[str]:
+    """Cross-check the decision stage's own missing_fields claim against the
+    same ENTITIES_JSON it was given. Observed intermittently: the LLM claims
+    "metric" (sometimes others) is missing on a terse follow-up turn even
+    though it's plainly present in ENTITIES_JSON -- a self-contradiction
+    against its own stated rule ("if required fields are present, return
+    proceed"), not a real ambiguity. Scoped to _SELF_VERIFIABLE_REQUIRED_FIELDS
+    so this only overrides objectively-false claims, never a field that
+    genuinely needs semantic judgment to consider satisfied.
+    """
+    return [
+        field
+        for field in missing_fields
+        if not (field.strip().lower() in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, field.strip().lower()))
+    ]
 
 
 def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> bool:
@@ -1053,14 +1146,34 @@ def _decision_stage(
         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
         "conversation_history_json": json.dumps(conversation_history or [], ensure_ascii=False),
     }
-    parsed = _invoke_chain(chain, payload)
-    logger.info("Decision stage raw response: %s", parsed)
 
-    decision_raw = str(parsed.get("decision") or "").strip().lower()
-    if decision_raw not in {"proceed", "clarify", "reject"}:
-        raise ValueError("Invalid decision from decision stage")
+    # One retry on a malformed decision value: unlike generate_analysis_plan
+    # (pipeline.py), which already retries with validation feedback on a bad
+    # response, this call previously had zero retry -- any single malformed
+    # "decision" (observed live via CVaLab, outside {proceed, clarify,
+    # reject}) fell straight through to orchestrate_visualization_request's
+    # generic exception handler ("orchestrator_failed", a vague "I need more
+    # detail" message even for a well-formed request). A same-input retry is
+    # cheap and mirrors the plan-generation stage's own established pattern.
+    parsed: Dict[str, Any] = {}
+    decision_raw = ""
+    recovered_reason: Optional[str] = None
+    last_bad_decision: Optional[str] = None
+    for attempt in range(2):
+        parsed = _invoke_chain(chain, payload)
+        logger.info("Decision stage raw response (attempt %d): %s", attempt + 1, parsed)
+        decision_raw = str(parsed.get("decision") or "").strip().lower()
+        if decision_raw in {"proceed", "clarify", "reject"}:
+            break
+        if decision_raw in _REASON_IMPLIES_DECISION:
+            recovered_reason = decision_raw
+            decision_raw = _REASON_IMPLIES_DECISION[decision_raw]
+            break
+        last_bad_decision = decision_raw
+    else:
+        raise ValueError(f"Invalid decision from decision stage after retry: {last_bad_decision!r}")
 
-    reason = str(parsed.get("reason") or "").strip() or "llm_orchestrator"
+    reason = recovered_reason or str(parsed.get("reason") or "").strip() or "llm_orchestrator"
     missing_fields = _coerce_missing_fields(parsed.get("missing_fields"))
     clarification_type = parsed.get("clarification_type")
     clarification_options = _coerce_options(parsed.get("clarification_options"))
@@ -1075,6 +1188,73 @@ def _decision_stage(
         clarification_options=clarification_options,
         missing_fields=missing_fields,
     )
+
+    # Deterministic safeguard: don't trust a missing_fields claim that
+    # contradicts ENTITIES_JSON itself (see _drop_falsely_missing_fields).
+    if outcome.decision != "proceed" and outcome.missing_fields:
+        corrected_missing = _drop_falsely_missing_fields(outcome.missing_fields, entities)
+        if not corrected_missing:
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
+        if corrected_missing != outcome.missing_fields:
+            outcome = VisualizationRequestOutcome(
+                decision=outcome.decision,
+                reason=outcome.reason,
+                message=outcome.message,
+                clarification_type=outcome.clarification_type,
+                clarification_options=outcome.clarification_options,
+                missing_fields=corrected_missing,
+            )
+
+    # Deterministic safeguard: a request with a real, present metric cannot be
+    # genuinely out of scope -- Rasa's own intent routing already established
+    # this is a visualization request before this stage ever runs (this
+    # action only fires for generate_visualization/update_visualization/
+    # clarify_visualization). Observed: the LLM sometimes rejects such a
+    # request as out_of_scope when the actual gap is a missing chart_type --
+    # that's a clarify, not a reject.
+    #
+    # Scoped tightly to reasons that are actually about scope: "reject" is
+    # also legitimately used for unrelated data-validity problems (e.g.
+    # invalid_date_format for a malformed date), which must NOT be silently
+    # waved through just because a metric happens to be present too -- that
+    # was a real regression caught via CVaLab's webapp_negative_invalid_time_period
+    # scenario during this fix's own testing.
+    if (
+        outcome.decision == "reject"
+        and "out_of_scope" in outcome.reason.strip().lower().replace(" ", "_")
+        and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS)
+    ):
+        still_missing = [field for field in ("metric", "chart_type") if not _entity_present(entities, field)]
+        if still_missing:
+            # The LLM's own message text ("This request is not related to...")
+            # came from the wrong reject/out_of_scope judgment being overridden
+            # here -- reusing it verbatim would still show the user a false
+            # claim even though the decision itself is now correct.
+            readable_fields = " and ".join(field.replace("_", " ") for field in still_missing)
+            outcome = VisualizationRequestOutcome(
+                decision="clarify",
+                reason="missing_required_fields",
+                message=f"Please specify the {readable_fields} you'd like to use.",
+                clarification_type=still_missing[0],
+                clarification_options=[],
+                missing_fields=still_missing,
+            )
+        else:
+            outcome = VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
 
     # Deterministic safeguard: do not block statistical-test requests on chart_type.
     if (

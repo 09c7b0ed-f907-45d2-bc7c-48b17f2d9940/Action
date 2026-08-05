@@ -128,6 +128,36 @@ def extract_entities_from_latest_message(
         return {}
 
     entities_list = cast(List[Any], entities_any)
+
+    # RegexEntityExtractor's SSOT-derived lookup tables match a literal word
+    # anywhere it appears (e.g. "age" is a valid metric name AND a valid
+    # group_by value), with zero regard for context. DIETClassifier, by
+    # contrast, assigns at most one contextual label per token span. When the
+    # two disagree about what the *same span* of text means (e.g. "age" in
+    # "...grouped by age in 10-year buckets" is unambiguously the group_by,
+    # but the metric lookup table also matches it), the regex-only reading is
+    # a false positive, not a genuine second candidate -- it previously read
+    # to the decision-stage LLM as a real ambiguity ("DTN or AGE?") for an
+    # unambiguous request. Build the set of DIET-confirmed spans first so the
+    # second pass can drop any entity type whose only support is a lookup-table
+    # match contradicted by DIET's own reading of those exact tokens.
+    diet_span_labels: Dict[tuple[Any, Any], str] = {}
+    for ent_any in entities_list:
+        if not isinstance(ent_any, dict):
+            continue
+        ent = cast(Dict[str, Any], ent_any)
+        extractors = ent.get("extractors")
+        extractor_names = (
+            {e.get("extractor") for e in extractors if isinstance(e, dict)}
+            if isinstance(extractors, list)
+            else set()
+        )
+        if "DIETClassifier" in extractor_names:
+            span = (ent.get("start"), ent.get("end"))
+            entity_type = ent.get("entity")
+            if isinstance(entity_type, str):
+                diet_span_labels[span] = entity_type
+
     extracted: Dict[str, Any] = {}
     for ent_any in entities_list:
         if not isinstance(ent_any, dict):
@@ -135,6 +165,21 @@ def extract_entities_from_latest_message(
         ent = cast(Dict[str, Any], ent_any)
         key_any = ent.get("entity")
         if not isinstance(key_any, str) or "value" not in ent:
+            continue
+
+        extractors = ent.get("extractors")
+        extractor_names = (
+            {e.get("extractor") for e in extractors if isinstance(e, dict)}
+            if isinstance(extractors, list)
+            else set()
+        )
+        span = (ent.get("start"), ent.get("end"))
+        diet_label_for_span = diet_span_labels.get(span)
+        if (
+            "DIETClassifier" not in extractor_names
+            and diet_label_for_span is not None
+            and diet_label_for_span != key_any
+        ):
             continue
 
         value = ent["value"]
@@ -145,9 +190,17 @@ def extract_entities_from_latest_message(
         existing = extracted[key_any]
         if isinstance(existing, list):
             existing_list = cast(List[Any], existing)
-            existing_list.append(value)
-        else:
+            if value not in existing_list:
+                existing_list.append(value)
+        elif value != existing:
             extracted[key_any] = [existing, value]
+        # else: identical repeat of an already-captured scalar value (e.g.
+        # "male patients DTN" and "female patients DTN" both mention DTN) --
+        # not a second distinct answer, so it must not turn a clean scalar
+        # into a redundant [DTN, DTN] list. That shape previously read to the
+        # decision-stage LLM as two different metric candidates to choose
+        # between, producing a spurious "which metric?" clarification for an
+        # unambiguous request.
 
     return extracted
 

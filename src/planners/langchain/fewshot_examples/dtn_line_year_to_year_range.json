@@ -1,43 +1,57 @@
 {
   "category": "filters",
-  "user_utterance": "Show me a bar chart of DTN for patients in 2026",
+  "user_utterance": "Make a line graph for dtn for male ischemic patients from 2025 to 2026",
   "entities_detected": {
     "metric": [
       "DTN"
     ],
     "chart_type": [
-      "BAR"
+      "LINE"
+    ],
+    "sex": [
+      "MALE"
+    ],
+    "stroke_type": [
+      "ISCHEMIC"
     ],
     "date": [
+      "2025",
       "2026"
     ]
   },
   "assistant": {
     "charts": [
       {
-        "chart_type": "BAR",
+        "chart_type": "LINE",
         "semantics": {
-          "intent": "DISTRIBUTION",
+          "intent": "TREND",
           "measure": {
-            "type": "DISTRIBUTION",
+            "type": "MEAN",
             "percentile": null
           },
           "splits": null,
-          "time": null,
-          "x_axis": {
-            "role": "METRIC_VALUE",
-            "metric": "DTN",
-            "label": null,
-            "unit": null,
-            "aggregation": null,
-            "grain": null
+          "time": {
+            "grain": "QUARTER",
+            "window": {
+              "start_date": "2025-01-01",
+              "end_date": "2026-12-31"
+            },
+            "include_partial": null
           },
-          "y_axis": {
-            "role": "COUNT",
+          "x_axis": {
+            "role": "TIME",
             "metric": null,
             "label": null,
             "unit": null,
             "aggregation": null,
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEAN",
             "grain": null
           }
         },
@@ -45,14 +59,12 @@
           "type": "AndFilter",
           "and_": [
             {
-              "operator": "GE",
-              "type": "DateFilter",
-              "value": "2026-01-01"
+              "type": "StrokeFilter",
+              "value": "ISCHEMIC"
             },
             {
-              "operator": "LE",
-              "type": "DateFilter",
-              "value": "2026-12-31"
+              "type": "SexFilter",
+              "value": "MALE"
             }
           ]
         },

@@ -59,6 +59,95 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
         self.assertEqual(len(series[0].data), 1)
         self.assertEqual(series[0].data[0].x, "2023-02")
 
+    def test_map_metrics_payload_to_series_uses_day_labels_for_daily_buckets(self) -> None:
+        """Regression test: a 'last 30 days, daily' request previously
+        rendered as if it had ~2 data points, because every single-day
+        bucket in the same month collapsed onto the same "%Y-%m" label.
+        Distinct day buckets must get distinct, day-precision labels.
+        """
+        kpis = [
+            SimpleNamespace(
+                kpi1=SimpleNamespace(median=None, mean=float(i), case_count=[], d1=None),
+                grouped_by=None,
+                time_period=SimpleNamespace(start_date=f"2026-07-{6 + i:02d}", end_date=f"2026-07-{6 + i:02d}"),
+                data_origin=None,
+            )
+            for i in range(5)
+        ]
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=kpis)}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=[],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=True,
+        )
+
+        x_values = [point.x for s in series for point in s.data]
+        self.assertEqual(x_values, ["2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10"])
+        self.assertEqual(len(set(x_values)), 5, "distinct day buckets must not share a label")
+
+    def test_map_metrics_payload_to_series_uses_quarter_label_for_calendar_quarter(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(median=None, mean=14.0, case_count=[], d1=None),
+            grouped_by=None,
+            time_period=SimpleNamespace(start_date="2023-04-01", end_date="2023-06-30"),
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=[],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=True,
+        )
+
+        self.assertEqual(series[0].data[0].x, "2023-Q2")
+
+    def test_map_metrics_payload_to_series_uses_year_label_for_calendar_year(self) -> None:
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(median=None, mean=14.0, case_count=[], d1=None),
+            grouped_by=None,
+            time_period=SimpleNamespace(start_date="2023-01-01", end_date="2023-12-31"),
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=[],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=True,
+        )
+
+        self.assertEqual(series[0].data[0].x, "2023")
+
+    def test_map_metrics_payload_to_series_uses_full_date_for_non_calendar_aligned_span(self) -> None:
+        """A week-ish bucket that doesn't line up with a calendar month/
+        quarter/year boundary must fall back to full date precision, not be
+        mistaken for one of those and mislabeled."""
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(median=None, mean=14.0, case_count=[], d1=None),
+            grouped_by=None,
+            time_period=SimpleNamespace(start_date="2023-02-06", end_date="2023-02-12"),
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=[],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=True,
+        )
+
+        self.assertEqual(series[0].data[0].x, "2023-02-06")
+
     def test_map_metrics_payload_to_series_emits_missing_time_point_as_null(self) -> None:
         kpi = SimpleNamespace(
             kpi1=SimpleNamespace(
