@@ -89,6 +89,7 @@ class CountryCollectionResult(TypedDict):
 class MineScopeResult(TypedDict, total=False):
     provider_id: int
     provider_group_id: int
+    label: str
 
 
 class AnalyticsCenterClient:
@@ -629,13 +630,25 @@ class AnalyticsCenterClient:
         provider = cast(Dict[str, Any], provider_any) if isinstance(provider_any, dict) else {}
         provider_id = self._as_int(provider.get("id"))
         if provider_id is not None:
-            return {"provider_id": provider_id}
+            result: MineScopeResult = {"provider_id": provider_id}
+            for name_key in ("nameEnglish", "nameNative", "shortName", "name"):
+                name_val = provider.get(name_key)
+                if isinstance(name_val, str) and name_val.strip():
+                    result["label"] = name_val.strip()
+                    break
+            return result
 
         group_any = settings.get("currentProviderGroup")
         group = cast(Dict[str, Any], group_any) if isinstance(group_any, dict) else {}
         group_id = self._as_int(group.get("id"))
         if group_id is not None:
-            return {"provider_group_id": group_id}
+            group_result: MineScopeResult = {"provider_group_id": group_id}
+            for name_key in ("fullName", "name", "shortName", "title"):
+                name_val = group.get(name_key)
+                if isinstance(name_val, str) and name_val.strip():
+                    group_result["label"] = name_val.strip()
+                    break
+            return group_result
 
         return None
 

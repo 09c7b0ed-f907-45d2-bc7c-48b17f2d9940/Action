@@ -337,7 +337,7 @@ def _uses_distribution_axes(
     if chart_type_upper == ChartType.HISTOGRAM.value:
         return True
 
-    if chart_type_upper not in {ChartType.BAR.value, ChartType.LINE.value} or dimensions:
+    if chart_type_upper not in {ChartType.BAR.value, ChartType.LINE.value}:  # or dimensions:
         return False
 
     has_points = False

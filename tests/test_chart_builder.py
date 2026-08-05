@@ -1,7 +1,7 @@
 import unittest
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
-from src.domain.langchain.schema import ChartSpec, GroupBySex, GroupByStrokeType, MetricSpec
+from src.domain.langchain.schema import ChartSpec, GroupByAge, GroupBySex, GroupByStrokeType, MetricSpec
 from src.executors.mapping.chart_builder import (
     _axis_label_for_dimension,
     _dimension_label,
@@ -82,6 +82,41 @@ class ChartBuilderTests(unittest.TestCase):
         if x_axis is None or y_axis is None:
             self.fail("Expected both axes to be present")
         self.assertEqual(x_axis.label, "initial systolic blood pressure (mmHg)")
+        self.assertEqual(x_axis.type.value, "linear")
+        self.assertEqual(y_axis.label, "Cases")
+        self.assertEqual(y_axis.type.value, "linear")
+
+    def test_line_distribution_with_age_split_uses_metric_and_cases_axes(self) -> None:
+        plan_chart = ChartSpec(
+            chart_type="LINE",
+            metrics=[MetricSpec(metric="DTN")],
+        )
+        dimensions = [Dimension(GroupByAge(buckets=[]))]
+        series = [
+            ChartSeries(
+                name="30-39",
+                data=[
+                    ChartPoint(x=30, y=2),
+                    ChartPoint(x=60, y=5),
+                    ChartPoint(x=90, y=1),
+                ],
+            )
+        ]
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=dimensions,
+            series=series,
+            derived_axes=None,
+        )
+
+        self.assertIsNotNone(chart.metadata.x_axis)
+        self.assertIsNotNone(chart.metadata.y_axis)
+        x_axis = chart.metadata.x_axis
+        y_axis = chart.metadata.y_axis
+        if x_axis is None or y_axis is None:
+            self.fail("Expected both axes to be present")
+        self.assertEqual(x_axis.label, "door to needle (minutes)")
         self.assertEqual(x_axis.type.value, "linear")
         self.assertEqual(y_axis.label, "Cases")
         self.assertEqual(y_axis.type.value, "linear")
