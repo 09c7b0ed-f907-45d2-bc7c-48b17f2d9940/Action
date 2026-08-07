@@ -19,6 +19,8 @@ def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
         return scope.label.strip()
 
     scope_type = (scope.scope_type or "").strip().lower()
+    if scope_type == "mine":
+        return "My Hospital"
     if scope_type == "country_average":
         if isinstance(scope.value, str) and scope.value.strip():
             return f"National Mean ({scope.value.strip()})"
