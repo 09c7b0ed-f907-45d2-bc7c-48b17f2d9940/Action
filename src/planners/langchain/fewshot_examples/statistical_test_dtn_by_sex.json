@@ -1,0 +1,38 @@
+{
+  "category": "statistical_tests",
+  "user_utterance": "Run a Mann-Whitney U test comparing DTN between male and female patients",
+  "entities_detected": {
+    "sex": [
+      "MALE",
+      "FEMALE"
+    ],
+    "metric": [
+      "DTN"
+    ],
+    "statistical_test_type": [
+      "MANN_WHITNEY_U_TEST"
+    ]
+  },
+  "assistant": {
+    "charts": null,
+    "statistical_tests": [
+      {
+        "test_type": "MANN_WHITNEY_U_TEST",
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "group_by": null,
+        "filters": null
+      }
+    ]
+  }
+}

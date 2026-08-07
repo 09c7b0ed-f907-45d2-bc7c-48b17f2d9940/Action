@@ -1,0 +1,159 @@
+import unittest
+
+from src.domain.dto.charts.types import ChartPoint, ChartSeries
+from src.domain.langchain.schema import ChartSpec, GroupByAge, GroupBySex, GroupByStrokeType, MetricSpec
+from src.executors.mapping.chart_builder import (
+    _axis_label_for_dimension,
+    _dimension_label,
+    _format_operator,
+    build_chart_dto,
+)
+from src.executors.planning.query_compiler import Dimension
+from src.executors.planning.ssot_metric_defaults import get_histogram_axes
+from src.shared.ssot_loader import get_canonical_display_name
+
+
+class ChartBuilderTests(unittest.TestCase):
+    def test_bar_distribution_without_dimensions_uses_metric_and_cases_axes(
+        self,
+    ) -> None:
+        plan_chart = ChartSpec(
+            chart_type="BAR",
+            metrics=[MetricSpec(metric="SYSTOLIC_PRESSURE")],
+        )
+        series = [
+            ChartSeries(
+                name="SYSTOLIC_PRESSURE",
+                data=[
+                    ChartPoint(x=0, y=0),
+                    ChartPoint(x=30, y=15),
+                    ChartPoint(x=60, y=18),
+                ],
+            )
+        ]
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=[],
+            series=series,
+            derived_axes=None,
+        )
+
+        self.assertIsNotNone(chart.metadata.x_axis)
+        self.assertIsNotNone(chart.metadata.y_axis)
+        x_axis = chart.metadata.x_axis
+        y_axis = chart.metadata.y_axis
+        if x_axis is None or y_axis is None:
+            self.fail("Expected both axes to be present")
+        self.assertEqual(x_axis.label, "initial systolic blood pressure (mmHg)")
+        self.assertEqual(x_axis.type.value, "linear")
+        self.assertEqual(y_axis.label, "Cases")
+        self.assertEqual(y_axis.type.value, "linear")
+
+    def test_line_distribution_without_dimensions_uses_metric_and_cases_axes(
+        self,
+    ) -> None:
+        plan_chart = ChartSpec(
+            chart_type="LINE",
+            metrics=[MetricSpec(metric="SYSTOLIC_PRESSURE")],
+        )
+        series = [
+            ChartSeries(
+                name="SYSTOLIC_PRESSURE",
+                data=[
+                    ChartPoint(x=0, y=0),
+                    ChartPoint(x=30, y=15),
+                    ChartPoint(x=60, y=18),
+                ],
+            )
+        ]
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=[],
+            series=series,
+            derived_axes=None,
+        )
+
+        self.assertIsNotNone(chart.metadata.x_axis)
+        self.assertIsNotNone(chart.metadata.y_axis)
+        x_axis = chart.metadata.x_axis
+        y_axis = chart.metadata.y_axis
+        if x_axis is None or y_axis is None:
+            self.fail("Expected both axes to be present")
+        self.assertEqual(x_axis.label, "initial systolic blood pressure (mmHg)")
+        self.assertEqual(x_axis.type.value, "linear")
+        self.assertEqual(y_axis.label, "Cases")
+        self.assertEqual(y_axis.type.value, "linear")
+
+    def test_line_distribution_with_age_split_uses_metric_and_cases_axes(self) -> None:
+        plan_chart = ChartSpec(
+            chart_type="LINE",
+            metrics=[MetricSpec(metric="DTN")],
+        )
+        dimensions = [Dimension(GroupByAge(buckets=[]))]
+        series = [
+            ChartSeries(
+                name="30-39",
+                data=[
+                    ChartPoint(x=30, y=2),
+                    ChartPoint(x=60, y=5),
+                    ChartPoint(x=90, y=1),
+                ],
+            )
+        ]
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=dimensions,
+            series=series,
+            derived_axes=None,
+        )
+
+        self.assertIsNotNone(chart.metadata.x_axis)
+        self.assertIsNotNone(chart.metadata.y_axis)
+        x_axis = chart.metadata.x_axis
+        y_axis = chart.metadata.y_axis
+        if x_axis is None or y_axis is None:
+            self.fail("Expected both axes to be present")
+        self.assertEqual(x_axis.label, "door to needle (minutes)")
+        self.assertEqual(x_axis.type.value, "linear")
+        self.assertEqual(y_axis.label, "Cases")
+        self.assertEqual(y_axis.type.value, "linear")
+
+
+class OperatorSymbolTests(unittest.TestCase):
+    def test_format_operator_matches_ssot(self) -> None:
+        expected = {"GE": ">=", "LE": "<=", "LT": "<", "GT": ">", "EQ": "=", "NE": "!="}
+        for code, symbol in expected.items():
+            self.assertEqual(_format_operator(code), symbol)
+
+
+class DimensionLabelSsotConsistencyTests(unittest.TestCase):
+    # Sex/StrokeType axis labels used to be hardcoded ("Sex", "Stroke Type");
+    # they now come from SSOT like every other dimension label in this module
+    # (NIHSS, Age, generic canonical fields already did). This just pins the
+    # label to whatever SSOT currently says, so a future SSOT wording change
+    # is a deliberate, visible test update rather than a silent surprise.
+    def test_axis_label_for_sex_dimension_comes_from_ssot(self) -> None:
+        dimension = Dimension(GroupBySex(categories=None))
+        expected = get_canonical_display_name("SEX_TYPE")
+        self.assertEqual(_axis_label_for_dimension(dimension), expected)
+        self.assertEqual(_dimension_label(dimension), expected)
+
+    def test_axis_label_for_stroke_type_dimension_comes_from_ssot(self) -> None:
+        dimension = Dimension(GroupByStrokeType(categories=None))
+        expected = get_canonical_display_name("STROKE_TYPE")
+        self.assertEqual(_axis_label_for_dimension(dimension), expected)
+        self.assertEqual(_dimension_label(dimension), expected)
+
+
+class HistogramAxesTests(unittest.TestCase):
+    def test_dtn_histogram_axis_no_longer_needs_a_hardcoded_override(self) -> None:
+        x_axis, y_axis = get_histogram_axes("DTN", x_min=0, x_max=520)
+        self.assertIn("minutes", x_axis.label)
+        self.assertEqual(y_axis.label, "Cases")
+
+
+if __name__ == "__main__":
+    unittest.main()

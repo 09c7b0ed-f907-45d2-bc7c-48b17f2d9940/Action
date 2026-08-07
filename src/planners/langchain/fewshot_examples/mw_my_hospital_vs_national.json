@@ -1,0 +1,47 @@
+{
+  "category": "statistical_tests",
+  "user_utterance": "Compare DTN between my hospital and the national mean",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "scope": [
+      "mine",
+      "country_average"
+    ],
+    "statistical_test_type": [
+      "MANN_WHITNEY_U_TEST"
+    ]
+  },
+  "assistant": {
+    "charts": null,
+    "statistical_tests": [
+      {
+        "test_type": "MANN_WHITNEY_U_TEST",
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "country_code": null
+            }
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "country_average",
+              "value": null,
+              "label": "National mean",
+              "country_code": null
+            }
+          }
+        ],
+        "group_by": null,
+        "filters": null
+      }
+    ]
+  }
+}

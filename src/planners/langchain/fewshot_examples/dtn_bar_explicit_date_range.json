@@ -1,0 +1,65 @@
+{
+  "category": "filters",
+  "user_utterance": "Create a bar chart for DTN from 2023-01-01 to 2023-12-31",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "BAR"
+    ],
+    "date": [
+      "2023-01-01",
+      "2023-12-31"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": {
+            "grain": null,
+            "window": {
+              "start_date": "2023-01-01",
+              "end_date": "2023-12-31"
+            },
+            "include_partial": null
+          },
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

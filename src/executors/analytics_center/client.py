@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from src.shared import ssot_loader
 from src.util import env as env_util
 from src.util.logging_utils import log_context
 
@@ -88,6 +89,7 @@ class CountryCollectionResult(TypedDict):
 class MineScopeResult(TypedDict, total=False):
     provider_id: int
     provider_group_id: int
+    label: str
 
 
 class AnalyticsCenterClient:
@@ -201,7 +203,7 @@ class AnalyticsCenterClient:
         headers["x-trace-id"] = trace_label
 
         request_payload: ProxyRequestPayload = {
-            # Preserve the exact Rasa sender_id value for proxy token lookup.
+            # senderId carries conversation routing identity (for example thread scoping).
             "senderId": user_sub,
             "target": self.target,
             "request": {
@@ -628,13 +630,25 @@ class AnalyticsCenterClient:
         provider = cast(Dict[str, Any], provider_any) if isinstance(provider_any, dict) else {}
         provider_id = self._as_int(provider.get("id"))
         if provider_id is not None:
-            return {"provider_id": provider_id}
+            result: MineScopeResult = {"provider_id": provider_id}
+            for name_key in ("nameEnglish", "nameNative", "shortName", "name"):
+                name_val = provider.get(name_key)
+                if isinstance(name_val, str) and name_val.strip():
+                    result["label"] = name_val.strip()
+                    break
+            return result
 
         group_any = settings.get("currentProviderGroup")
         group = cast(Dict[str, Any], group_any) if isinstance(group_any, dict) else {}
         group_id = self._as_int(group.get("id"))
         if group_id is not None:
-            return {"provider_group_id": group_id}
+            group_result: MineScopeResult = {"provider_group_id": group_id}
+            for name_key in ("fullName", "name", "shortName", "title"):
+                name_val = group.get(name_key)
+                if isinstance(name_val, str) and name_val.strip():
+                    group_result["label"] = name_val.strip()
+                    break
+            return group_result
 
         return None
 
@@ -701,28 +715,15 @@ class AnalyticsCenterClient:
         raw = (country_input or "").strip()
         if not raw:
             return None
-        if len(raw) == 2 and raw.isalpha():
-            return raw.upper()
 
-        aliases: Dict[str, str] = {
-            "spain": "ES",
-            "espana": "ES",
-            "españa": "ES",
-            "mexico": "MX",
-            "méxico": "MX",
-            "czech republic": "CZ",
-            "czechia": "CZ",
-            "united kingdom": "GB",
-            "uk": "GB",
-            "great britain": "GB",
-            "united states": "US",
-            "usa": "US",
-            "u.s.a": "US",
-        }
+        ssot_canonical = ssot_loader.resolve_country_code(raw)
+        if ssot_canonical:
+            return ssot_canonical
+
+        # SSOT/CountryType.yml doesn't recognize it -- fall back to an exact
+        # match against whatever this deployment's Analytics Center backend
+        # actually has data for.
         normalized = raw.lower()
-        if normalized in aliases:
-            return aliases[normalized]
-
         countries_page = self.list_countries(
             user_sub=user_sub,
             limit=300,

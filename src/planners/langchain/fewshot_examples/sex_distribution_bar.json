@@ -1,0 +1,54 @@
+{
+  "category": "basic",
+  "user_utterance": "Show me a bar chart for SEX",
+  "entities_detected": {
+    "metric": [
+      "SEX"
+    ],
+    "chart_type": [
+      "BAR"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": null,
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "SEX",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "SEX",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

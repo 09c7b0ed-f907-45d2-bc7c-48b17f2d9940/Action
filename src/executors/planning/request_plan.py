@@ -14,52 +14,6 @@ from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.ssot_enums import GroupByType
 from src.executors.planning.query_compiler import Dimension
-from src.util import env as env_util
-
-
-def _parse_int_csv(raw: str) -> List[int]:
-    out: List[int] = []
-    for part in (raw or "").split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            out.append(int(token))
-        except Exception:
-            continue
-    return out
-
-
-_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1")
-_DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or "")
-_INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
-
-
-def _build_data_origin(override: Optional[DataOrigin] = None) -> DataOrigin:
-    if override is not None:
-        return override
-
-    provider_group_ids = list(_DEFAULT_PROVIDER_GROUP_IDS)
-    provider_ids = list(_DEFAULT_PROVIDER_IDS)
-    if not provider_group_ids and not provider_ids:
-        provider_group_ids = [1]
-
-    kwargs: dict[str, Any] = {}
-    if provider_group_ids:
-        kwargs["providerGroupId"] = provider_group_ids
-    if provider_ids:
-        kwargs["providerId"] = provider_ids
-    return DataOrigin(**kwargs)
-
-
-@dataclass
-class ComboContext:
-    case_filter: Optional[Any]
-    label_parts: List[str]
-    include_metric_alias: bool
-    group_by_field: Optional[str]
-    metric_requests: List[MetricRequest]
-    data_origin: Optional[DataOrigin]
 
 
 @dataclass
@@ -137,9 +91,9 @@ def build_primary_request_specs(
     group_by_field: Optional[str],
     metric_scope_labels: Optional[Sequence[Optional[str]]] = None,
     data_origin: Optional[DataOrigin] = None,
-) -> tuple[List[RequestSpec], List[ComboContext]]:
+    include_general_stats: bool = False,
+) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
-    combo_contexts: List[ComboContext] = []
     per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
 
     for combo in combos_list:
@@ -158,11 +112,14 @@ def build_primary_request_specs(
                 scope_label = metric_scope_labels[idx] if metric_scope_labels and idx < len(metric_scope_labels) else None
                 effective_scope_label = scope_label.strip() if isinstance(scope_label, str) and scope_label.strip() else None
 
+                if metric_origin is None:
+                    raise ValueError("Request planning requires explicit metric or chart data origin")
+
                 req = GraphQLQueryRequest(
                     metrics=[metric_request],
                     timePeriod=req_time_period,
-                    dataOrigin=_build_data_origin(metric_origin),
-                    includeGeneralStats=_INCLUDE_GENERAL_STATS,
+                    dataOrigin=metric_origin,
+                    includeGeneralStats=include_general_stats,
                     caseFilter=case_filter,
                     groupBy=(GroupByType(group_by_field) if group_by_field else None),
                 )
@@ -178,22 +135,15 @@ def build_primary_request_specs(
                         batched_time_periods=batched_time_periods,
                     )
                 )
-                combo_contexts.append(
-                    ComboContext(
-                        case_filter=case_filter,
-                        label_parts=label_parts,
-                        include_metric_alias=include_metric_alias,
-                        group_by_field=group_by_field,
-                        metric_requests=[metric_request],
-                        data_origin=metric_origin,
-                    )
-                )
         else:
+            if data_origin is None:
+                raise ValueError("Request planning requires explicit chart data origin")
+
             req = GraphQLQueryRequest(
                 metrics=metric_requests,
                 timePeriod=req_time_period,
-                dataOrigin=_build_data_origin(data_origin),
-                includeGeneralStats=_INCLUDE_GENERAL_STATS,
+                dataOrigin=data_origin,
+                includeGeneralStats=include_general_stats,
                 caseFilter=case_filter,
                 groupBy=(GroupByType(group_by_field) if group_by_field else None),
             )
@@ -208,64 +158,5 @@ def build_primary_request_specs(
                     batched_time_periods=batched_time_periods,
                 )
             )
-            combo_contexts.append(
-                ComboContext(
-                    case_filter=case_filter,
-                    label_parts=label_parts,
-                    include_metric_alias=include_metric_alias,
-                    group_by_field=group_by_field,
-                    metric_requests=list(metric_requests),
-                    data_origin=data_origin,
-                )
-            )
-
-    return specs, combo_contexts
-
-
-def build_fallback_request_specs(
-    combo_contexts: List[ComboContext],
-    batched_time_periods: List[TimePeriod],
-) -> List[RequestSpec]:
-    specs: List[RequestSpec] = []
-
-    for context in combo_contexts:
-        for period in batched_time_periods:
-            # period_label = period_to_label(period)
-            # retry_label_parts = [*context.label_parts, period_label]
-            retry_label_parts = context.label_parts
-            req = GraphQLQueryRequest(
-                metrics=context.metric_requests,
-                timePeriod=period,
-                dataOrigin=_build_data_origin(context.data_origin),
-                includeGeneralStats=_INCLUDE_GENERAL_STATS,
-                caseFilter=context.case_filter,
-                groupBy=(GroupByType(context.group_by_field) if context.group_by_field else None),
-            )
-            specs.append(
-                RequestSpec(
-                    req=req,
-                    label_parts=retry_label_parts,
-                    include_metric_alias=context.include_metric_alias,
-                    group_by_field=context.group_by_field,
-                    add_time_period_labels=True,
-                    batched_time_periods=[period],
-                )
-            )
 
     return specs
-
-
-def should_retry_unbatched_time(
-    all_series: List[Any],
-    request_failures: List[str],
-    batched_time_enabled: bool,
-    batched_time_periods: List[TimePeriod],
-) -> bool:
-    if all_series:
-        return False
-    if not batched_time_enabled or len(batched_time_periods) <= 1:
-        return False
-
-    has_timeout = any(reason == "timeout" for reason in request_failures)
-    no_failures_recorded = len(request_failures) == 0
-    return has_timeout or no_failures_recorded

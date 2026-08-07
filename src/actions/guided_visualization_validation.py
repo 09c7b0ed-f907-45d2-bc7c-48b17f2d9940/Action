@@ -11,24 +11,12 @@ from src.actions.i18n import resolve_language_from_tracker, translate
 from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
 from src.domain.langchain import schema as S
 from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
+from src.shared.ssot_loader import resolve_scope
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
 
 SKIP_SENTINEL = "__skip__"
-ALL_SCOPE_TOKENS = {"all", "all hospitals", "all sites", "all providers"}
-MINE_SCOPE_TOKENS = {
-    "mine",
-    "my",
-    "my hospital",
-    "my site",
-    "my center",
-    "my centre",
-    "our hospital",
-    "our site",
-    "our center",
-    "our centre",
-}
 SKIP_TOKENS = {
     SKIP_SENTINEL,
     "/skip_guided_step",
@@ -318,8 +306,8 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
     with log_context(trace_id=trace_id, sender_id=tracker.sender_id, user_sub=user_sub, validator="guided_hospital_scope"):
         scope_ref_any = entities.get("hospital_scope_reference")
         if isinstance(scope_ref_any, str) and scope_ref_any.strip():
-            scope_ref_norm = normalize_text(scope_ref_any)
-            if scope_ref_norm in ALL_SCOPE_TOKENS:
+            scope_ref_resolved = resolve_scope(scope_ref_any)
+            if scope_ref_resolved == "ALL":
                 return {
                     "guided_hospital_scope": _json_scope(
                         "all",
@@ -327,7 +315,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                         label=translate("action.guided.all_hospitals_label", language=language),
                     )
                 }
-            if scope_ref_norm in MINE_SCOPE_TOKENS:
+            if scope_ref_resolved == "MINE":
                 process_id, hostname = _runtime_instance_fields()
                 logger.debug(
                     "[GuidedVisualizationValidation] Mine scope validation",
@@ -375,7 +363,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
 
         hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
-        if isinstance(hospital_any, str) and hospital_any.strip() and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS:
+        if isinstance(hospital_any, str) and hospital_any.strip() and resolve_scope(hospital_any) != "ALL":
             page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
             providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
             providers_list: List[Dict[str, Any]] = []
@@ -416,7 +404,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
 
         raw_source = scope_ref_any if scope_ref_any is not None else slot_value
         raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
-        if normalize_text(raw) in ALL_SCOPE_TOKENS:
+        if resolve_scope(raw) == "ALL":
             return {
                 "guided_hospital_scope": _json_scope(
                     "all",
@@ -425,7 +413,14 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 )
             }
 
-        _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
+        _utter_invalid(
+            dispatcher,
+            translate(
+                "action.guided.hospital_scope_invalid",
+                language=language,
+                default="I could not match that hospital scope. Please provide a hospital name, provider group, or say all hospitals.",
+            ),
+        )
         return {"guided_hospital_scope": None}
 
 
@@ -548,6 +543,46 @@ def _optional_slot_value(slots: Dict[str, Any], name: str) -> Optional[str]:
     return text
 
 
+def _default_semantic_intent(chart_type: str, has_time_grain: bool) -> str:
+    token = (chart_type or "").strip().upper()
+    if has_time_grain:
+        return "TREND"
+    if token == "HISTOGRAM":
+        return "DISTRIBUTION"
+    if token == "BAR":
+        return "COMPARISON"
+    return "DISTRIBUTION"
+
+
+def _default_semantic_measure(has_time_grain: bool) -> str:
+    if has_time_grain:
+        return "MEAN"
+    return "DISTRIBUTION"
+
+
+def _semantic_grouping(group_by_value: Optional[str]) -> tuple[Optional[S.TimeSemanticsSpec], Optional[List[S.SplitSpec]]]:
+    if not isinstance(group_by_value, str) or not group_by_value.strip():
+        return None, None
+
+    token = group_by_value.strip().upper()
+    if token in {"DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}:
+        return S.TimeSemanticsSpec(grain=token), None
+
+    if token == "SEX":
+        return None, [S.SplitSpec(kind="SEX")]
+
+    if token == "STROKE_TYPE":
+        return None, [S.SplitSpec(kind="STROKE_TYPE")]
+
+    if token == "AGE":
+        return None, [S.SplitSpec(kind="AGE")]
+
+    if token == "ADMISSION_NIHSS":
+        return None, [S.SplitSpec(kind="NIHSS")]
+
+    return None, [S.SplitSpec(kind="CANONICAL", field=token)]
+
+
 def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[str] = None) -> S.AnalysisPlan:
     metric = str(slots.get("metric") or "").strip().upper()
     chart_type = (_optional_slot_value(slots, "chart_type") or "LINE").upper()
@@ -568,9 +603,13 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     elif len(filters) > 1:
         filter_node = S.AndFilter(and_=filters)
 
-    group_specs: List[S.GroupBySpec] = []
-    if isinstance(group_by, str) and group_by.strip():
-        group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
+    semantics_time, semantics_splits = _semantic_grouping(group_by)
+    semantics = S.AnalysisSemanticsSpec(
+        intent=_default_semantic_intent(chart_type, has_time_grain=semantics_time is not None),
+        measure=S.MeasureSemanticsSpec(type=_default_semantic_measure(has_time_grain=semantics_time is not None)),
+        time=semantics_time,
+        splits=semantics_splits,
+    )
 
     metric_origin_scope: Optional[S.OriginScopeSpec] = None
     if isinstance(guided_scope, dict) and guided_scope:
@@ -595,8 +634,8 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
         charts=[
             S.ChartSpec(
                 chart_type=chart_type,
+                semantics=semantics,
                 filters=filter_node,
-                group_by=group_specs or None,
                 metrics=[S.MetricSpec(metric=metric, originScope=metric_origin_scope)],
             )
         ],

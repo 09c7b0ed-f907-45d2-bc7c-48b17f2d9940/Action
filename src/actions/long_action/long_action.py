@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
+from typing import Any, Callable, Deque, Dict, List, Optional, Protocol, Tuple, cast
 from urllib.parse import urlsplit
 
 import requests
@@ -440,60 +441,117 @@ class LongAction(Action, ABC):
             if _DEFER_CALLBACK_HANDOFF:
                 ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
                 ctx._job_id = job_id
-                ctx.attach_progress_callback(
-                    lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
-                        ctx,
-                        job_id,
-                        callback_url,
-                        callback_token,
-                        message,
-                    )
-                )
+                enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url, callback_token)
+                ctx.attach_progress_callback(enqueue)
                 with log_context(job_id=job_id, callback_mode=True):
-                    self._post_progress(
-                        ctx,
-                        job_id,
-                        callback_url,
-                        callback_token,
-                        self._lock_message(),
-                    )
+                    enqueue(self._lock_message())
                     try:
                         await self.work(ctx)
                     finally:
-                        self._post_progress(
-                            ctx,
-                            job_id,
-                            callback_url,
-                            callback_token,
-                            self._release_message(),
-                        )
+                        enqueue(self._release_message())
+                        drain()
                 return [*immediate_events, *ctx.pending_events]
 
             ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
             ctx._job_id = job_id
 
             # In callback mode, stream every ctx.say() as a progress callback to
-            # the frontend while the job is running.
-            ctx.attach_progress_callback(
-                lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
-                    ctx,
-                    job_id,
-                    callback_url,
-                    callback_token,
-                    message,
-                )
-            )
+            # the frontend while the job is running. enqueue() never blocks on
+            # network I/O -- see _start_progress_sender.
+            enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url, callback_token)
+            ctx.attach_progress_callback(enqueue)
 
             threading.Thread(
                 target=bind_current_context(self._run_work),
-                args=(ctx, job_id, callback_url, callback_token),
+                args=(ctx, job_id, callback_url, callback_token, enqueue, drain),
                 daemon=True,
             ).start()
 
             # No additional events required; we rely on the external callback.
             return immediate_events
 
-    def _post_progress(
+    def _start_progress_sender(
+        self,
+        ctx: LongActionContext,
+        job_id: str,
+        callback_url: str,
+        callback_token: str,
+    ) -> Tuple[Callable[[Dict[str, Any]], None], Callable[[], None]]:
+        """Start a dedicated background sender thread for one job's progress
+        callbacks, and return (enqueue, drain).
+
+        enqueue() is what ctx.say() ends up calling. It only ever appends to an
+        in-memory deque -- it never blocks on network I/O -- so calling it from
+        inside the async work() loop (e.g. once per completed GraphQL fetch,
+        with several fetches running concurrently) can't stall the other
+        concurrent fetches waiting on it. A dedicated worker thread drains the
+        deque and does the actual (slow, 2-5s observed) HTTP POST per message.
+
+        Plain "fetching data..." progress pings (ctx.say(progress=...), which
+        LongActionContext.say() normalises to {"custom": {"progress": ...}}
+        with nothing else) are coalesced on enqueue: a new one entering the
+        deque drops any earlier, not-yet-sent ping, since only the latest is
+        ever meaningful to show. Without this, a job with many progress ticks
+        (e.g. one per chart in a multi-chart plan) would still queue up a long
+        backlog of slow-to-send pings ahead of the one message that actually
+        matters -- the final visualization_response/error -- so the result
+        would sit ready but undelivered for minutes behind stale "still
+        working..." updates. Every other message type (lock/release control
+        signals, the final result, decision payloads, ...) is never coalesced
+        or reordered, only ever appended and sent in submission order.
+
+        drain() blocks until every message enqueued so far has actually been
+        sent and then stops the worker thread. Callers that need the
+        "release" message to be delivered before returning (so the frontend
+        doesn't miss it if the process were to exit right after) should call
+        drain() after enqueuing it.
+        """
+        cond = threading.Condition()
+        items: Deque[Optional[Dict[str, Any]]] = collections.deque()
+
+        def _is_coalescable_progress(message: Optional[Dict[str, Any]]) -> bool:
+            if not isinstance(message, dict):
+                return False
+            custom = message.get("custom")
+            return isinstance(custom, dict) and set(custom.keys()) == {"progress"}
+
+        def enqueue(message: Dict[str, Any]) -> None:
+            with cond:
+                if _is_coalescable_progress(message):
+                    remaining = [item for item in items if not _is_coalescable_progress(item)]
+                    items.clear()
+                    items.extend(remaining)
+                items.append(message)
+                cond.notify()
+
+        def _worker() -> None:
+            while True:
+                with cond:
+                    while not items:
+                        cond.wait()
+                    item = items.popleft()
+                if item is None:
+                    return
+                try:
+                    self._send_progress_blocking(ctx, job_id, callback_url, callback_token, item)
+                except Exception:
+                    logger.debug(
+                        "Progress sender thread failed to send a message; continuing without interrupting work",
+                        exc_info=True,
+                    )
+
+        worker = threading.Thread(target=bind_current_context(_worker), daemon=True)
+        worker.start()
+
+        def drain() -> None:
+            with cond:
+                items.append(None)
+                cond.notify()
+            worker.join()
+
+        return enqueue, drain
+
+    def _send_progress_blocking(
         self,
         ctx: LongActionContext,
         job_id: str,
@@ -501,7 +559,14 @@ class LongAction(Action, ABC):
         callback_token: str,
         message: Dict[str, Any],
     ) -> None:
-        """Send a callback for a single ctx.say() message.
+        """Send a callback for a single ctx.say() message. Blocks on network I/O --
+        only ever call this from the dedicated per-job sender thread started by
+        _start_progress_sender, never from the async work() loop directly. A
+        ctx.say() during concurrent GraphQL fetching used to call this
+        inline, which froze the whole event loop for the HTTP round-trip (2-5s
+        observed) on every single progress update, serializing what should have
+        been concurrent fetches and turning a multi-chart request into a
+        many-minutes-long one.
 
         Payload envelope:
         - Real messages go in ``events`` as tracker bot-event objects.
@@ -593,7 +658,15 @@ class LongAction(Action, ABC):
                     },
                 )
 
-    def _run_work(self, ctx: LongActionContext, job_id: str, callback_url: str, callback_token: str) -> None:
+    def _run_work(
+        self,
+        ctx: LongActionContext,
+        job_id: str,
+        callback_url: str,
+        callback_token: str,
+        enqueue: Callable[[Dict[str, Any]], None],
+        drain: Callable[[], None],
+    ) -> None:
         trace_id = _resolve_progress_trace_id(ctx, {})
         try:
             with log_context(
@@ -603,13 +676,7 @@ class LongAction(Action, ABC):
                 callback_mode=True,
                 callback_endpoint=_callback_endpoint_label(callback_url),
             ):
-                self._post_progress(
-                    ctx,
-                    job_id,
-                    callback_url,
-                    callback_token,
-                    self._lock_message(),
-                )
+                enqueue(self._lock_message())
                 asyncio.run(self.work(ctx))
         except Exception:
             logger.exception(
@@ -625,13 +692,8 @@ class LongAction(Action, ABC):
             # something, but do not propagate the exception.
             ctx.say(text="Something went wrong.")
         finally:
-            self._post_progress(
-                ctx,
-                job_id,
-                callback_url,
-                callback_token,
-                self._release_message(),
-            )
+            enqueue(self._release_message())
+            drain()
             ctx.done()
 
     @abstractmethod

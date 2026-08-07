@@ -93,6 +93,7 @@ class MetricKpiGroup(BaseModel):
 
 class Metric(BaseModel):
     kpi_group: List[MetricKpiGroup] = Field(..., alias="kpiGroup")
+    labels: Optional[List[str]] = None
 
     model_config = ConfigDict(populate_by_name=True)
 

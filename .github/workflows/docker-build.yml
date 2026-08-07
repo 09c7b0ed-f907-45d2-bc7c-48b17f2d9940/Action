@@ -53,21 +53,16 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          RAW_REF="${TARGET_REF:-${GITHUB_REF_NAME}}"
+          SAFE_REF="$(echo "$RAW_REF" | tr '[:upper:]' '[:lower:]' | tr '/ ' '-' | tr -cd 'a-z0-9._-')"
 
           echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
 
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            RAW_REF="${TARGET_REF:-${GITHUB_REF_NAME}}"
-            SAFE_REF="$(echo "$RAW_REF" | tr '[:upper:]' '[:lower:]' | tr '/ ' '-' | tr -cd 'a-z0-9._-')"
-            if [ -z "$SAFE_REF" ]; then
-              SAFE_REF="manual"
-            fi
-            echo "IMAGE_TAG=${SAFE_REF}-manual" >> "$GITHUB_ENV"
-            echo "IMAGE_SHA_TAG=${SAFE_REF}-${SHORT_SHA}" >> "$GITHUB_ENV"
-            exit 0
+          if [ -z "$SAFE_REF" ]; then
+            SAFE_REF="manual"
           fi
 
-          case "${GITHUB_REF_NAME}" in
+          case "$SAFE_REF" in
             master)
               echo "IMAGE_TAG=latest" >> "$GITHUB_ENV"
               echo "IMAGE_SHA_TAG=master-$SHORT_SHA" >> "$GITHUB_ENV"
@@ -77,8 +72,13 @@ jobs:
               echo "IMAGE_SHA_TAG=dev-$SHORT_SHA" >> "$GITHUB_ENV"
               ;;
             *)
-              echo "Unsupported branch for docker publish: ${GITHUB_REF_NAME}" >&2
-              exit 1
+              if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+                echo "IMAGE_TAG=$SAFE_REF" >> "$GITHUB_ENV"
+                echo "IMAGE_SHA_TAG=$SAFE_REF-$SHORT_SHA" >> "$GITHUB_ENV"
+              else
+                echo "Unsupported branch for docker publish: ${GITHUB_REF_NAME}" >&2
+                exit 1
+              fi
               ;;
           esac
 

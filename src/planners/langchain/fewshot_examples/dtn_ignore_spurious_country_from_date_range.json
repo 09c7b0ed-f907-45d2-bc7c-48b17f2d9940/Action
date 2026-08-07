@@ -1,0 +1,79 @@
+{
+  "category": "filters",
+  "user_utterance": "show dtn trend from 2023 to 2026",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "LINE"
+    ],
+    "date": [
+      "2023",
+      "2026"
+    ],
+    "country_code": [
+      "TO"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "MEAN",
+            "percentile": null
+          },
+          "splits": null,
+          "time": {
+            "grain": "QUARTER",
+            "window": null,
+            "include_partial": null
+          },
+          "x_axis": {
+            "role": "TIME",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEAN",
+            "grain": null
+          }
+        },
+        "filters": {
+          "type": "AndFilter",
+          "and_": [
+            {
+              "operator": "GE",
+              "type": "DateFilter",
+              "value": "2023-01-01"
+            },
+            {
+              "operator": "LE",
+              "type": "DateFilter",
+              "value": "2026-12-31"
+            }
+          ]
+        },
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

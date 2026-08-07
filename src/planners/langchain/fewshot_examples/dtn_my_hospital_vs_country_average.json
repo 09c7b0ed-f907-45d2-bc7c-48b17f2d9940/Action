@@ -1,0 +1,75 @@
+{
+  "category": "cross_hospital",
+  "user_utterance": "Compare DTN for my hospital against the Italy national average",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "BAR"
+    ],
+    "scope": [
+      "mine",
+      "country_average"
+    ],
+    "country_code": [
+      "IT"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN",
+            "percentile": null
+          },
+          "splits": null,
+          "time": null,
+          "x_axis": {
+            "role": "CATEGORY",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEDIAN",
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "mine",
+              "value": null,
+              "country_code": null
+            }
+          },
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": {
+              "scope_type": "country_average",
+              "value": null,
+              "label": "Italy national average",
+              "country_code": "IT"
+            }
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

@@ -7,17 +7,20 @@ from itertools import product
 from typing import Any, List, Optional, Sequence, Tuple
 
 from src.domain.graphql.request import (
+    BooleanFilter,
     DateFilter,
     IntegerFilter,
     LogicalFilter,
     SexFilter,
     StrokeFilter,
     TimePeriod,
+    default_time_bounds,
 )
-from src.domain.graphql.ssot_enums import GroupByType, Operator, SexType, StrokeType
+from src.domain.graphql.ssot_enums import Operator, SexType, StrokeType
 from src.domain.langchain import schema as S
 from src.domain.langchain.schema import (
     GroupByAge,
+    GroupByBoolean,
     GroupByCanonicalField,
     GroupByNIHSS,
     GroupBySex,
@@ -25,10 +28,92 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
-from src.shared.ssot_loader import get_sex_label, get_stroke_label
+from src.shared.ssot_loader import get_boolean_label, get_sex_label, get_ssot_items, get_stroke_label
 from src.util.coalesce import coalesce
 
 logger = logging.getLogger(__name__)
+
+
+def _bool_values_from_categories(categories: Optional[List[str]]) -> Optional[List[bool]]:
+    if not categories:
+        return None
+
+    out: List[bool] = []
+    for raw in categories:
+        token = (raw or "").strip().lower()
+        if token in {"true", "1", "yes", "y"}:
+            out.append(True)
+        elif token in {"false", "0", "no", "n"}:
+            out.append(False)
+        else:
+            raise ValueError(
+                f"Invalid BOOLEAN split category '{raw}'. Expected one of true/false, yes/no, 1/0"
+            )
+    return out
+
+
+def _group_by_from_semantics(chart: S.ChartSpec) -> Optional[List[GroupBySpec]]:
+    semantics = chart.semantics
+    if semantics is None:
+        return None
+
+    groups: List[GroupBySpec] = []
+
+    if semantics.time is not None and semantics.time.grain is not None:
+        groups.append(
+            GroupByTime(
+                grain=semantics.time.grain,
+                window=semantics.time.window,
+                include_partial=semantics.time.include_partial,
+            )
+        )
+
+    for split in semantics.splits or []:
+        kind = split.kind
+
+        if kind == "SEX":
+            groups.append(GroupBySex(categories=split.categories))
+            continue
+
+        if kind == "STROKE_TYPE":
+            groups.append(GroupByStrokeType(categories=split.categories))
+            continue
+
+        if kind == "CANONICAL":
+            if not split.field:
+                raise ValueError("Semantic split kind CANONICAL requires split.field")
+            groups.append(GroupByCanonicalField(field=split.field, values=split.categories))
+            continue
+
+        if kind == "BOOLEAN":
+            if not split.field:
+                raise ValueError("Semantic split kind BOOLEAN requires split.field")
+            groups.append(
+                GroupByBoolean(
+                    boolean_type=split.field,
+                    values=_bool_values_from_categories(split.categories),
+                )
+            )
+            continue
+
+        if kind == "AGE":
+            if not split.buckets:
+                raise ValueError("Semantic split kind AGE requires split.buckets")
+            groups.append(GroupByAge(buckets=split.buckets))
+            continue
+
+        if kind == "NIHSS":
+            if not split.buckets:
+                raise ValueError("Semantic split kind NIHSS requires split.buckets")
+            groups.append(GroupByNIHSS(buckets=split.buckets))
+            continue
+
+        if kind == "CUSTOM":
+            raise ValueError("Semantic split kind CUSTOM is not supported by retrieval compiler yet")
+
+        raise ValueError(f"Unsupported semantic split kind: {kind}")
+
+    return groups
 
 
 def _collect_lc_date_bounds(node: Any) -> tuple[Optional[str], Optional[str]]:
@@ -101,40 +186,11 @@ def _build_month_periods_from_bounds(start_iso: Optional[str], end_iso: Optional
     return periods
 
 
-def _build_recent_month_periods(month_count: int = 12) -> List[TimePeriod]:
-    from calendar import monthrange
-
-    if month_count <= 0:
-        return []
-
-    today = date.today()
-    y, m = today.year, today.month
-    periods: List[TimePeriod] = []
-
-    for _ in range(month_count):
-        month_start = date(y, m, 1)
-        month_end = date(y, m, monthrange(y, m)[1])
-        periods.append(
-            TimePeriod(
-                startDate=month_start.isoformat(),
-                endDate=month_end.isoformat(),
-            )
-        )
-        if m == 1:
-            y -= 1
-            m = 12
-        else:
-            m -= 1
-
-    periods.reverse()
-    return periods
-
-
 def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str, dict[str, Any]]:
     context: dict[str, Any] = {
         "event": event,
         "operation": operation,
-        "outcome": "degraded",
+        "outcome": "failure",
     }
     for key, value in fields.items():
         if value is None:
@@ -144,8 +200,20 @@ def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str
 
 
 def _groupby_type_values() -> set[str]:
+    # GroupByType.yml also catalogs group-by dimensions Action only supports
+    # via client-side synthesis (supported_by: internal, e.g. SEX_TYPE,
+    # STROKE_TYPE, time grains) alongside the handful the server actually
+    # accepts as a native groupBy parameter (supported_by: api). Only the
+    # latter belong in the server-side-supported set this function name
+    # promises -- otherwise a synthetic dimension gets mistaken for native and
+    # skips the per-category filter fan-out entirely.
     try:
-        return {str(member.value).upper() for member in GroupByType}
+        items = get_ssot_items("GroupByType.yml")
+        return {
+            str(item.get("canonical")).upper()
+            for item in items
+            if item.get("supported_by") == "api" and item.get("canonical")
+        }
     except Exception:
         logger.debug(
             "Failed to enumerate server-supported group-by fields; using empty supported-field set",
@@ -226,18 +294,9 @@ class Dimension:
                     try:
                         return datetime.fromisoformat(text).date()
                     except Exception:
-                        logger.debug(
-                            "Failed to parse GroupByTime date; returning None",
-                            exc_info=True,
-                            extra=_compiler_log_context(
-                                event="query_compiler.groupby_time.date_parse_fallback",
-                                operation="Dimension.categories",
-                                dimension_type=type(self.spec).__name__,
-                                grain=str(time_spec.grain).upper(),
-                                raw_value=text,
-                            ),
+                        raise ValueError(
+                            "Semantic time grouping requires ISO date values in window bounds"
                         )
-                        return None
 
             window = time_spec.window
             grain = str(time_spec.grain).upper()
@@ -329,15 +388,145 @@ class Dimension:
                     y, q = _shift_quarter(y, q, 1)
                 return buckets
 
-            if grain == "QUARTER" and window is None:
-                # No window specified - default to last 8 quarters (2 years)
+            def _year_bucket(year: int) -> tuple[date, date]:
+                return date(year, 1, 1), date(year, 12, 31)
+
+            if isinstance(window, S.TimeWindow) and grain == "YEAR":
+                unit = str(window.unit).upper()
+                year_span = 0
+                if unit == "YEAR":
+                    year_span = window.last_n
+                elif unit == "QUARTER":
+                    year_span = max(1, window.last_n // 4)
+                elif unit == "MONTH":
+                    year_span = max(1, window.last_n // 12)
+
+                if year_span <= 0:
+                    return []
+
                 today = date.today()
-                current_quarter = (today.month - 1) // 3 + 1
                 buckets: list[tuple[date, date]] = []
-                for i in range(8):
-                    y, q = _shift_quarter(today.year, current_quarter, -i)
-                    buckets.append(_quarter_bucket(y, q))
+                for i in range(year_span):
+                    buckets.append(_year_bucket(today.year - i))
                 buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "YEAR":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                buckets = [_year_bucket(y) for y in range(start.year, end.year + 1)]
+                return buckets
+
+            from datetime import timedelta
+
+            if isinstance(window, S.TimeWindow) and grain == "DAY":
+                unit = str(window.unit).upper()
+                day_span = 0
+                if unit == "DAY":
+                    day_span = window.last_n
+                elif unit == "WEEK":
+                    day_span = window.last_n * 7
+                elif unit == "BIWEEK":
+                    day_span = window.last_n * 14
+
+                if day_span <= 0:
+                    return []
+
+                today = date.today()
+                buckets = [(today - timedelta(days=i), today - timedelta(days=i)) for i in range(day_span)]
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "DAY":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                buckets = []
+                cur = start
+                while cur <= end:
+                    buckets.append((cur, cur))
+                    cur = cur + timedelta(days=1)
+                return buckets
+
+            if isinstance(window, S.TimeWindow) and grain == "WEEK":
+                unit = str(window.unit).upper()
+                week_span = 0
+                if unit == "WEEK":
+                    week_span = window.last_n
+                elif unit == "BIWEEK":
+                    week_span = window.last_n * 2
+
+                if week_span <= 0:
+                    return []
+
+                today = date.today()
+                current_week_start = today - timedelta(days=today.weekday())
+                buckets = []
+                for i in range(week_span):
+                    week_start = current_week_start - timedelta(days=7 * i)
+                    buckets.append((week_start, week_start + timedelta(days=6)))
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "WEEK":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                week_start = start - timedelta(days=start.weekday())
+                buckets = []
+                cur = week_start
+                while cur <= end:
+                    buckets.append((cur, cur + timedelta(days=6)))
+                    cur = cur + timedelta(days=7)
+                return buckets
+
+            if isinstance(window, S.TimeWindow) and grain == "BIWEEK":
+                unit = str(window.unit).upper()
+                biweek_span = 0
+                if unit == "BIWEEK":
+                    biweek_span = window.last_n
+                elif unit == "WEEK":
+                    biweek_span = max(1, window.last_n // 2)
+
+                if biweek_span <= 0:
+                    return []
+
+                today = date.today()
+                current_week_start = today - timedelta(days=today.weekday())
+                buckets = []
+                for i in range(biweek_span):
+                    period_start = current_week_start - timedelta(days=14 * i)
+                    buckets.append((period_start, period_start + timedelta(days=13)))
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "BIWEEK":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                period_start = start - timedelta(days=start.weekday())
+                buckets = []
+                cur = period_start
+                while cur <= end:
+                    buckets.append((cur, cur + timedelta(days=13)))
+                    cur = cur + timedelta(days=14)
                 return buckets
 
             return []
@@ -345,6 +534,8 @@ class Dimension:
             return list(self.spec.buckets)
         if isinstance(self.spec, GroupByNIHSS):
             return list(self.spec.buckets)
+        if isinstance(self.spec, GroupByBoolean):
+            return list(self.spec.values) if self.spec.values else [True, False]
         return []
 
     def label_for(self, cat: Any) -> str:
@@ -358,25 +549,16 @@ class Dimension:
             return get_stroke_label(str(raw).upper())
         if isinstance(self.spec, (GroupByAge, GroupByNIHSS)):
             return f"{cat.min}-{cat.max}"
+        if isinstance(self.spec, GroupByBoolean):
+            return f"{get_boolean_label(self.spec.boolean_type)}: {'Yes' if cat else 'No'}"
         if isinstance(self.spec, GroupByCanonicalField):
             return self.spec.field
         if isinstance(self.spec, GroupByTime):
-            time_spec = self.spec
             try:
                 start, end = cat
                 return f"{start.isoformat()} to {end.isoformat()}"
             except Exception:
-                logger.debug(
-                    "Failed to format GroupByTime label; using grain fallback",
-                    exc_info=True,
-                    extra=_compiler_log_context(
-                        event="query_compiler.groupby_time.label_fallback",
-                        operation="Dimension.label_for",
-                        dimension_type=type(self.spec).__name__,
-                        grain=str(time_spec.grain).upper(),
-                    ),
-                )
-                return time_spec.grain
+                raise ValueError("Semantic time grouping produced an invalid time bucket label")
         return str(cat)
 
     def filter_for(self, cat: Any) -> Optional[Any]:
@@ -410,22 +592,13 @@ class Dimension:
                     ),
                 ],
             )
+        if isinstance(self.spec, GroupByBoolean):
+            return BooleanFilter(property=self.spec.boolean_type, value=bool(cat))
         if isinstance(self.spec, GroupByTime):
-            time_spec = self.spec
             try:
                 start, end = cat
             except Exception:
-                logger.debug(
-                    "Failed to unpack GroupByTime category; skipping filter generation",
-                    exc_info=True,
-                    extra=_compiler_log_context(
-                        event="query_compiler.groupby_time.filter_fallback",
-                        operation="Dimension.filter_for",
-                        dimension_type=type(self.spec).__name__,
-                        grain=str(time_spec.grain).upper(),
-                    ),
-                )
-                return None
+                raise ValueError("Semantic time grouping produced an invalid time bucket filter")
             return LogicalFilter(
                 operator="AND",
                 children=[
@@ -468,7 +641,14 @@ class CompiledChartGrouping:
 
 
 def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
-    collected_groups: List[GroupBySpec] = list(coalesce(chart.group_by, []))
+    semantics = chart.semantics
+    if semantics is None:
+        raise ValueError("Chart semantics are required for retrieval compilation")
+    if semantics.measure is None:
+        raise ValueError("Chart semantics.measure is required for retrieval compilation")
+
+    semantic_groups = _group_by_from_semantics(chart)
+    collected_groups: List[GroupBySpec] = list(semantic_groups or [])
 
     seen: set[GroupBySpec] = set()
     uniq_groups: List[GroupBySpec] = []
@@ -498,18 +678,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
                     start, end = cat
                     batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
                 except Exception:
-                    logger.debug(
-                        "Failed to build batched time period; skipping invalid time bucket",
-                        exc_info=True,
-                        extra=_compiler_log_context(
-                            event="query_compiler.batched_time_period.skipped",
-                            operation="compile_chart_grouping",
-                            chart_type=chart.chart_type,
-                            dimension_type=type(batched_time_dim.spec).__name__,
-                            grain=str(batched_time_spec.grain).upper(),
-                        ),
-                    )
-                    continue
+                    raise ValueError("Semantic time grouping produced an invalid batched time period")
     if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
         batched_time_spec = batched_time_dim.spec
         if isinstance(batched_time_spec, GroupByTime):
@@ -517,14 +686,37 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
             if grain == "MONTH":
                 bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
                 batched_time_periods = _build_month_periods_from_bounds(bound_start, bound_end)
-                if not batched_time_periods:
-                    # Keep monthly chart semantics stable when planner omitted
-                    # explicit time window/date filters.
-                    batched_time_periods = _build_recent_month_periods(12)
 
-    if batched_time_enabled and not batched_time_periods:
-        batched_time_enabled = False
-        batched_time_dim = None
+    # Charts and statistical tests must behave the same when no explicit time
+    # window/range was given: fall back to the same default bounds
+    # (default_time_bounds) rather than hard-failing and asking the user to
+    # restate an explicit range.
+    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+        batched_time_spec = batched_time_dim.spec
+        if isinstance(batched_time_spec, GroupByTime):
+            grain = str(batched_time_spec.grain).upper()
+            if grain in ("MONTH", "QUARTER", "YEAR"):
+                default_start, default_end = default_time_bounds()
+                fallback_dim = Dimension(
+                    GroupByTime(
+                        grain=grain,
+                        window=S.TimeRange(start_date=default_start, end_date=default_end),
+                        include_partial=batched_time_spec.include_partial,
+                    )
+                )
+                for cat in fallback_dim.categories():
+                    try:
+                        start, end = cat
+                        batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
+                    except Exception:
+                        raise ValueError("Semantic time grouping produced an invalid batched time period")
+
+    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+        batched_time_spec = batched_time_dim.spec
+        if isinstance(batched_time_spec, GroupByTime):
+            raise ValueError(
+                "Semantic time grouping requires explicit time window/range or date-filter bounds for retrieval compilation"
+            )
 
     # After batched_time_periods is built, constrain to DateFilter bounds if present
     if batched_time_enabled and batched_time_periods:
@@ -559,10 +751,14 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     for d in filter_dims:
         cats = d.categories()
         if not cats:
-            continue
+            raise ValueError(
+                f"Semantic split '{type(d.spec).__name__}' produced no categories for retrieval compilation"
+            )
         sample_filter = d.filter_for(cats[0])
         if sample_filter is None:
-            continue
+            raise ValueError(
+                f"Semantic split '{type(d.spec).__name__}' produced an invalid filter for retrieval compilation"
+            )
         effective_filter_dims.append(d)
         filter_categories.append(cats)
 

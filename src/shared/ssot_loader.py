@@ -184,26 +184,26 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
             if val is not None:
                 meta[key] = val
 
-        descriptions = _coerce_description_map(item.get("description"))
+        descriptions = _coerce_description_map(item.get("descriptions"))
         if descriptions:
             meta["descriptions"] = descriptions
 
         # Display name: prefer first synonym if available
         if synonyms:
             meta["display_name"] = synonyms[0]
-
         # Numeric-specific (nested or flat)
-        numeric = item.get("numeric")
+        numeric = _ci_get(item, "numeric")
         if isinstance(numeric, dict):
             numeric = cast(Dict[str, Any], numeric)
             # Preserve nested block
             meta["numeric"] = numeric
             # Promote known keys for compatibility
             for k in ("unit", "range_min", "range_max", "distribution_default_buckets"):
-                if k in numeric and k not in meta:
-                    meta[k] = numeric[k]
+                value = _ci_get(numeric, k)
+                if value is not None and k not in meta:
+                    meta[k] = value
             # If a specific field is provided, synthesize properties if absent
-            field = numeric.get("field")
+            field = _ci_get(numeric, "field")
             if isinstance(field, str) and field and "properties" not in meta:
                 meta["properties"] = [field]
         # Also support legacy flat keys if present (pre-nested YAML)
@@ -414,7 +414,7 @@ def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
         code = canonical.strip().upper()
 
         synonyms = _flatten_synonyms(item.get("synonyms"))
-        descriptions = _coerce_description_map(item.get("description"))
+        descriptions = _coerce_description_map(item.get("descriptions"))
 
         data_type_any = _ci_get(item, "data_type")
         data_type: Optional[str]
@@ -627,6 +627,17 @@ def get_metric_display_name(metric_code: str) -> str:
     return code
 
 
+def get_operator_symbol(operator_code: str) -> str:
+    """Return SSOT-preferred display symbol for a comparison operator (first synonym), fallback to canonical code."""
+    code = (operator_code or "").strip().upper()
+    for item in _load_yaml("OperatorType.yml"):
+        if item.get("canonical") == code:
+            symbol = _first_synonym(item)
+            if symbol:
+                return symbol
+    return code
+
+
 def get_enum_option_label(metric_code: str, key: str) -> Optional[str]:
     """Return preferred label for an enum option of a given metric from SSOT.
 
@@ -729,6 +740,10 @@ def get_stroke_label(value: str) -> str:
     return _label_from_simple_type_file("StrokeType.yml", value) or value
 
 
+def get_boolean_label(value: str) -> str:
+    return _label_from_simple_type_file("BooleanType.yml", value) or value
+
+
 def resolve_sex(value: str) -> Optional[str]:
     """Resolve a sex value (canonical or synonym) to SexType canonical value."""
     return _resolve_canonical_value("SexType.yml", value)
@@ -737,6 +752,17 @@ def resolve_sex(value: str) -> Optional[str]:
 def resolve_stroke_type(value: str) -> Optional[str]:
     """Resolve a stroke type (canonical or synonym) to StrokeType canonical value."""
     return _resolve_canonical_value("StrokeType.yml", value)
+
+
+def resolve_country_code(value: str) -> Optional[str]:
+    """Resolve a country name or ISO 3166-1 alpha-2 code (canonical or synonym)
+    to its CountryType.yml canonical code."""
+    return _resolve_canonical_value("CountryType.yml", value)
+
+
+def resolve_scope(value: str) -> Optional[str]:
+    """Resolve a hospital-scope reference (canonical or synonym) to ScopeType canonical value (ALL or MINE)."""
+    return _resolve_canonical_value("ScopeType.yml", value)
 
 
 __all__ = [

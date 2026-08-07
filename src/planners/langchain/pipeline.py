@@ -27,17 +27,32 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
+from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
 from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
 _ENABLE_PLAN_CACHE = True
+_ENABLE_PLAN_CRITIQUE = True
 
 _FEWSHOT_TOKEN_WEIGHT = 1.0
 _FEWSHOT_ENTITY_KEY_WEIGHT = 6.0
 _FEWSHOT_ENTITY_VALUE_WEIGHT = 10.0
 _FEWSHOT_INTENT_WEIGHT = 8.0
+
+# Shared with request_orchestrator.py's _has_statistical_test_signal() so both
+# places that heuristically detect "does this question want a stat test"
+# agree on the same phrase list, instead of maintaining two that can drift.
+_STAT_TEST_KEYWORDS = (
+    "statistical test",
+    "mann-whitney",
+    "mann whitney",
+    "compare",
+    "significant",
+    "significance",
+    "difference between",
+)
 
 _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "chart_line": ["line", "trend"],
@@ -46,22 +61,25 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "distribution": ["distribution", "histogram", "violin", "box"],
     "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
     "group_by": [" by ", "grouped by", "split by"],
-    "stat_test": [
-        "compare",
-        "mann-whitney",
-        "statistical test",
-        "significant",
-        "difference between",
-    ],
+    "stat_test": list(_STAT_TEST_KEYWORDS),
 }
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
-_PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
+# 30s was tighter than observed real-world LLM latency for this call (plan
+# generation and, since the critique pass, plan critique too both routinely
+# take 20-45s), causing a per-attempt PlannerTimeoutError on otherwise-normal
+# requests. Env-configurable to match its sibling timeouts in
+# request_orchestrator.py rather than requiring a code change to retune.
+_PLANNER_REQUEST_TIMEOUT_RAW = env.get_env("ACTIONS_LLM_PLANNER_REQUEST_TIMEOUT_SECONDS", default="") or ""
+try:
+    _PLANNER_REQUEST_TIMEOUT_SECONDS = max(1.0, float(_PLANNER_REQUEST_TIMEOUT_RAW))
+except Exception:
+    _PLANNER_REQUEST_TIMEOUT_SECONDS = 45.0
 _MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v3"
+_PLAN_CACHE_KEY_VERSION = "v4"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
@@ -114,32 +132,6 @@ def _extract_json_block(text: str) -> str:
     return candidate[start : end + 1]
 
 
-def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
-    """Reject ambiguous planner output instead of auto-correcting it.
-
-    Empty dict items in group_by (e.g., group_by=[{}]) can be coerced by the
-    schema Union into unintended groupings. We fail fast so retry feedback forces
-    the model to return an explicit valid group_by spec or null.
-    """
-    charts_any = payload.get("charts")
-    if not isinstance(charts_any, list):
-        return
-    chart_entries = cast(List[Any], charts_any)
-
-    for chart_idx, chart_any in enumerate(chart_entries):
-        if not isinstance(chart_any, dict):
-            continue
-        chart = cast(Dict[str, Any], chart_any)
-        group_by_any = chart.get("group_by")
-        if not isinstance(group_by_any, list):
-            continue
-        group_by_entries = cast(List[Any], group_by_any)
-
-        for gb_idx, item in enumerate(group_by_entries):
-            if isinstance(item, dict) and not item:
-                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
-
-
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     import json
 
@@ -147,7 +139,6 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
-        _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -155,8 +146,66 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
-    _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
+
+
+def _assert_required_semantics(plan: AnalysisPlan) -> None:
+    charts = plan.charts or []
+    for idx, chart in enumerate(charts):
+        if chart.semantics is None:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}] is missing required semantics"
+            )
+        if chart.semantics.measure is None:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}].semantics.measure is required"
+            )
+
+
+def _collect_date_filter_bounds(node: Any) -> List[tuple[str, str]]:
+    """Recursively collect (operator, value) pairs from DateFilter nodes
+    nested anywhere under `node`, through And/Or/Not combinators."""
+    from src.domain.langchain.schema import AndFilter, DateFilter, NotFilter, OrFilter
+
+    if node is None:
+        return []
+    if isinstance(node, DateFilter):
+        return [(node.operator, node.value)]
+    if isinstance(node, AndFilter):
+        return [pair for child in node.and_ for pair in _collect_date_filter_bounds(child)]
+    if isinstance(node, OrFilter):
+        return [pair for child in node.or_ for pair in _collect_date_filter_bounds(child)]
+    if isinstance(node, NotFilter):
+        return _collect_date_filter_bounds(node.not_)
+    return []
+
+
+def _assert_no_redundant_date_encoding(plan: AnalysisPlan) -> None:
+    """plan_system.txt explicitly instructs the planner to use
+    semantics.time.window (TimeRange) for an explicit absolute date range and
+    NOT also add a redundant DateFilter for that same range -- but this is
+    occasionally violated live (the same bounds encoded both ways). This is a
+    purely mechanical, unambiguous structural rule, so it's enforced
+    deterministically here rather than left to the critique pass's fuzzier,
+    request-faithfulness judgment (which is scoped to whether the plan
+    matches the request, not whether it duplicates itself).
+    """
+    from src.domain.langchain.schema import TimeRange
+
+    for idx, chart in enumerate(plan.charts or []):
+        window = chart.semantics.time.window if chart.semantics and chart.semantics.time else None
+        if not isinstance(window, TimeRange):
+            continue
+        bounds = _collect_date_filter_bounds(chart.filters)
+        ge_values = {value for op, value in bounds if op == "GE"}
+        le_values = {value for op, value in bounds if op == "LE"}
+        if window.start_date in ge_values and window.end_date in le_values:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}] encodes the same date range twice -- "
+                f"both semantics.time.window (TimeRange {window.start_date} to {window.end_date}) "
+                "and an equivalent DateFilter in filters. Keep only semantics.time.window for this "
+                "range and remove the redundant DateFilter."
+            )
 
 
 def get_schema_description(model: Type[Any]) -> str:
@@ -382,7 +431,15 @@ def _intent_features(text: str) -> set[str]:
     return features
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> float:
+class MatchScoreBreakdown(TypedDict):
+    token_overlap: float
+    entity_key_overlap: float
+    entity_value_overlap: float
+    intent_overlap: float
+    total: float
+
+
+def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> MatchScoreBreakdown:
     query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
     query_tokens = _tokenize(query_text)
     ex_text = example.get("user", "")
@@ -405,7 +462,13 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     example_intent = _intent_features(ex_text)
     intent_score = float(len(query_intent & example_intent)) * _FEWSHOT_INTENT_WEIGHT
 
-    return token_overlap_score + entity_key_score + entity_value_score + intent_score
+    return {
+        "token_overlap": token_overlap_score,
+        "entity_key_overlap": entity_key_score,
+        "entity_value_overlap": entity_value_score,
+        "intent_overlap": intent_score,
+        "total": token_overlap_score + entity_key_score + entity_value_score + intent_score,
+    }
 
 
 def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
@@ -413,7 +476,7 @@ def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items
         return []
 
     capped = max(1, min(max_items, len(few_shot_examples)))
-    scored = [(_match_score(question, entities, ex), idx, ex) for idx, ex in enumerate(few_shot_examples)]
+    scored = [(_match_score(question, entities, ex)["total"], idx, ex) for idx, ex in enumerate(few_shot_examples)]
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
 
     selected = [item[2] for item in scored[:capped]]
@@ -421,6 +484,24 @@ def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items
     if scored and scored[0][0] <= 0:
         return few_shot_examples[:capped]
     return selected
+
+
+def score_few_shot_examples(question: str, entities: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Scores every loaded few-shot example against a candidate query, using
+    the exact same _match_score/_select_few_shot_examples the live planner
+    runs -- exposed via a debug HTTP route (see rasa_sdk_plugins) so "why
+    wasn't my example picked" has a real answer instead of a guess at the
+    scoring weights. Reuses _select_few_shot_examples itself for the
+    "selected" flag rather than re-deriving the all-zero-scores tie-break
+    rule here, so the preview can't drift out of sync with actual selection.
+    """
+    selected_names = {ex["name"] for ex in _select_few_shot_examples(question, entities, _MAX_FEW_SHOTS)}
+    scored = [
+        {"name": ex["name"], "selected": ex["name"] in selected_names, **_match_score(question, entities, ex)}
+        for ex in few_shot_examples
+    ]
+    scored.sort(key=lambda item: item["total"], reverse=True)
+    return scored
 
 
 def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
@@ -443,28 +524,7 @@ def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
 
 plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
     [
-        (
-            "system",
-            "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
-            "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
-            "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
-            "When scope is semantic (my hospital, hospital name, provider-group name, country average, all accessible), prefer metric-level originScope instead of dataOrigin. "
-            "Use originScope.scopeType from: mine, provider_name, provider_group_name, country_code, country_average, all_accessible, provider_id, provider_group_id. "
-            "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
-            "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
-            "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
-            "Numeric resolution guidance: put numeric range/bucketing controls at chart level in numericResolution (valueDomain/bucketing), never under metric objects. "
-            "Use numericResolution.valueDomain for explicit lower/upper bounds and numericResolution.bucketing for bucketCount/bucketSize when the user asks for binning granularity. "
-            "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
-            "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
-            "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
-            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
-            "Time grouping guidance: When group_by entity is quarter or quarterly, use GroupByTime with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR. Never emit an empty object for group_by entries."
-            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop group_by or other dimensions unless explicitly asked. "
-            "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
-            "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter.",
-        ),
+        ("system", load_prompt_text("plan_system", expected_variables=frozenset({"language"}))),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
@@ -477,6 +537,55 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
 )
 
 plan_chain: Any = plan_prompt | llm
+
+critic_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
+    [
+        ("system", load_prompt_text("critic_system")),
+        (
+            "user",
+            "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nCANDIDATE_PLAN_JSON:\n{candidate_plan}",
+        ),
+    ]
+)
+
+critic_chain: Any = critic_prompt | llm
+
+
+def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
+    """Ask an independent LLM pass whether `plan` faithfully implements
+    `question`/`entities`, rather than hand-coding a comparator per failure
+    mode (chart count, date fidelity, dropped update fields, ...). Returns a
+    human-readable issue summary on mismatch, None when the plan checks out.
+
+    This is a holistic judgment call, not a deterministic guarantee -- it
+    complements (does not replace) schema-level validation, which stays
+    fully deterministic. Any exception here is treated as "no complaint"
+    rather than blocking planning on the critic itself being unavailable.
+    """
+    if not _ENABLE_PLAN_CRITIQUE:
+        return None
+    try:
+        raw_result: Any = _invoke_with_timeout(
+            critic_chain,
+            {
+                "question": question,
+                "entities": json.dumps(entities),
+                "candidate_plan": plan.model_dump_json(indent=2),
+            },
+            label="plan_critique",
+        )
+        verdict = json.loads(_extract_json_block(_extract_text(raw_result)))
+    except Exception:
+        logger.exception("[Planner] Plan critique pass failed; proceeding without it")
+        return None
+
+    if not isinstance(verdict, dict) or verdict.get("ok") is True:
+        return None
+
+    issues = verdict.get("issues")
+    if isinstance(issues, list) and issues:
+        return "; ".join(str(issue) for issue in issues)
+    return "Plan does not faithfully match the request."
 
 
 class GeneratePlanDebug(TypedDict):
@@ -612,17 +721,21 @@ def generate_analysis_plan(
             if progress_cb is not None:
                 progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
 
-            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
-            steps.append(
-                {
-                    "step": f"plan_attempt_{attempt}",
-                    "prompt": "(prompt logging disabled)",
-                    "response": raw_result,
-                }
-            )
-
             try:
+                raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
+                steps.append(
+                    {
+                        "step": f"plan_attempt_{attempt}",
+                        "prompt": "(prompt logging disabled)",
+                        "response": raw_result,
+                    }
+                )
                 result = _coerce_analysis_plan(raw_result)
+                _assert_required_semantics(result)
+                _assert_no_redundant_date_encoding(result)
+                critique_issues = _critique_plan(question, entities, result)
+                if critique_issues:
+                    raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break
             except Exception as exc:
                 last_error = exc
@@ -634,8 +747,13 @@ def generate_analysis_plan(
                     }
                 )
                 if attempt >= total_attempts:
+                    logger.warning(
+                        "[Planner] Exhausted retries with an unresolved validation/critique issue; "
+                        "returning last attempt as-is: %s",
+                        exc,
+                    )
                     break
-                plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+                plan_inputs["reasoning"] = f"Previous output was rejected: {exc}. Return ONLY a corrected, valid AnalysisPlan JSON object."
 
         if result is None:
             raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error

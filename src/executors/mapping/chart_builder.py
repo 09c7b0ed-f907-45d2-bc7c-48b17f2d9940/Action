@@ -26,28 +26,27 @@ from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
     get_metric_metadata,
+    get_operator_symbol,
 )
 
 logger = logging.getLogger(__name__)
 _METRIC_METADATA = get_metric_metadata()
 
 
-def _coerce_float(value: object) -> Optional[float]:
+def _coerce_float(value: object) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     try:
         return float(str(value))
-    except Exception:
-        return None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Expected numeric chart value, got {value!r}") from exc
 
 
 def _flatten_y_values(series: List[ChartSeries]) -> List[float]:
     values: List[float] = []
     for s in series:
         for p in s.data:
-            y = _coerce_float(p.y)
-            if y is not None:
-                values.append(y)
+            values.append(_coerce_float(p.y))
     return values
 
 
@@ -63,14 +62,32 @@ def _quantile(sorted_values: List[float], q: float) -> float:
     return sorted_values[low] * (1.0 - weight) + sorted_values[high] * weight
 
 
+def _histogram_bin_width_from_points(points: List[Any]) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    deltas: List[float] = []
+    previous = _coerce_float(points[0].x)
+    for point in points[1:]:
+        current = _coerce_float(point.x)
+        delta = current - previous
+        if delta > 0:
+            deltas.append(delta)
+        previous = current
+
+    if not deltas:
+        return 0.0
+    return deltas[-1]
+
+
 def _dimension_label(dimension: Dimension) -> Optional[str]:
     if isinstance(dimension.spec, GroupByTime):
         grain = getattr(dimension.spec, "grain", None)
         return str(grain or "time").lower()
     if isinstance(dimension.spec, GroupBySex):
-        return "Sex"
+        return get_canonical_display_name("SEX_TYPE")
     if isinstance(dimension.spec, GroupByStrokeType):
-        return "Stroke Type"
+        return get_canonical_display_name("STROKE_TYPE")
     if isinstance(dimension.spec, GroupByNIHSS):
         return get_canonical_display_name("ADMISSION_NIHSS")
     if isinstance(dimension.spec, GroupByAge):
@@ -95,16 +112,7 @@ def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
 
 
 def _format_operator(value: str) -> str:
-    token = (value or "").strip().upper()
-    mapping = {
-        "GE": ">=",
-        "GT": ">",
-        "LE": "<=",
-        "LT": "<",
-        "EQ": "=",
-        "NE": "!=",
-    }
-    return mapping.get(token, token)
+    return get_operator_symbol(value)
 
 
 def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -> str:
@@ -128,15 +136,15 @@ def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -
         if isinstance(node, S.DateFilter):
             if not include_date:
                 return ""
-            operator = _format_operator(str(getattr(node, "operator", "")))
+            operator = get_operator_symbol(str(getattr(node, "operator", "")))
             value = str(getattr(node, "value", ""))
             return f"discharge date {operator} {value}"
         if isinstance(node, S.AgeFilter):
-            operator = _format_operator(str(getattr(node, "operator", "")))
+            operator = get_operator_symbol(str(getattr(node, "operator", "")))
             value = getattr(node, "value", "")
             return f"age {operator} {value:g}" if isinstance(value, (int, float)) else f"age {operator} {value}"
         if isinstance(node, S.NIHSSFilter):
-            operator = _format_operator(str(getattr(node, "operator", "")))
+            operator = get_operator_symbol(str(getattr(node, "operator", "")))
             value = getattr(node, "value", "")
             return f"nihss {operator} {value:g}" if isinstance(value, (int, float)) else f"nihss {operator} {value}"
         if isinstance(node, S.SexFilter):
@@ -284,9 +292,9 @@ def _axis_label_for_dimension(dimension: Dimension) -> str:
         }
         return label_map.get(grain, _title_case_token(grain))
     if isinstance(dimension.spec, GroupBySex):
-        return "Sex"
+        return get_canonical_display_name("SEX_TYPE")
     if isinstance(dimension.spec, GroupByStrokeType):
-        return "Stroke Type"
+        return get_canonical_display_name("STROKE_TYPE")
     if isinstance(dimension.spec, GroupByNIHSS):
         return get_canonical_display_name("ADMISSION_NIHSS")
     if isinstance(dimension.spec, GroupByAge):
@@ -321,13 +329,43 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
     return f"{display} ({unit})" if unit else display
 
 
+def _uses_distribution_axes(
+    chart_type_upper: str,
+    dimensions: List[Dimension],
+    series: List[ChartSeries],
+) -> bool:
+    if chart_type_upper == ChartType.HISTOGRAM.value:
+        return True
+
+    if chart_type_upper not in {ChartType.BAR.value, ChartType.LINE.value}:  # or dimensions:
+        return False
+
+    has_points = False
+    for item in series:
+        for point in item.data:
+            has_points = True
+            if not isinstance(point.x, (int, float)) or not isinstance(point.y, (int, float)):
+                return False
+
+    return has_points
+
+
 def _derive_axes_from_dimensions(
     plan_chart: S.ChartSpec,
     dimensions: List[Dimension],
     chart_type_upper: str,
+    series: List[ChartSeries],
 ) -> tuple[Optional[ChartAxis], Optional[ChartAxis]]:
     if chart_type_upper in {ChartType.PIE.value, ChartType.RADAR.value}:
         return None, None
+
+    if _uses_distribution_axes(chart_type_upper, dimensions, series):
+        x_axis = ChartAxis(
+            label=_metric_value_axis_label(plan_chart),
+            type=ChartAxis.AxisType.LINEAR,
+        )
+        y_axis = ChartAxis(label="Cases", type=ChartAxis.AxisType.LINEAR)
+        return x_axis, y_axis
 
     primary = _primary_dimension_for_axes(dimensions)
     if primary is not None:
@@ -345,23 +383,6 @@ def _derive_axes_from_dimensions(
 
     y_axis = ChartAxis(label=y_axis_label, type=ChartAxis.AxisType.LINEAR)
     return x_axis, y_axis
-
-
-def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
-    chart_type = (plan_chart.chart_type or "").upper()
-    if chart_type == ChartType.PIE.value:
-        return "category"
-
-    if len(metric_codes) != 1:
-        return "value range"
-
-    metric_code = metric_codes[0]
-    metric_unit = _metric_unit(metric_code)
-
-    if metric_unit:
-        return f"value range in {metric_unit}"
-
-    return "value range"
 
 
 def _derive_title(
@@ -392,9 +413,9 @@ def _derive_title(
             by_parts.append(token)
 
     if across_dim is None:
-        across_part = _fallback_across(plan_chart, metric_codes)
+        across_part = "category"
     else:
-        across_label = _dimension_label(across_dim) or _fallback_across(plan_chart, metric_codes)
+        across_label = _dimension_label(across_dim) or "category"
         across_part = _normalize_title_token(across_label)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
@@ -429,6 +450,7 @@ def build_chart_dto(
             plan_chart=plan_chart,
             dimensions=dimensions,
             chart_type_upper=chart_type_upper,
+            series=series,
         )
 
     metadata = ChartMetadata(
@@ -438,7 +460,7 @@ def build_chart_dto(
     )
 
     if chart_type_upper == ChartType.LINE.value:
-        has_time_grouping = any(isinstance(g, GroupByTime) for g in (plan_chart.group_by or []))
+        has_time_grouping = any(isinstance(dimension.spec, GroupByTime) for dimension in dimensions)
         return LineChart(metadata=metadata, series=series, smooth=not has_time_grouping)
     if chart_type_upper == ChartType.BAR.value:
         return BarChart(metadata=metadata, series=series)
@@ -460,8 +482,6 @@ def build_chart_dto(
             for p in s.data:
                 key = str(p.x)
                 y = _coerce_float(p.y)
-                if y is None:
-                    continue
                 totals[key] = totals.get(key, 0.0) + y
         slices = [PieSlice(label=label, value=value) for label, value in totals.items()]
         return PieChart(metadata=metadata, data=slices)
@@ -470,24 +490,27 @@ def build_chart_dto(
         source = series[0].data if series else []
         for p in source:
             y = _coerce_float(p.y)
-            if y is None:
-                continue
             steps.append(WaterfallStep(label=str(p.x), value=y, is_positive=y >= 0))
         return WaterfallChart(metadata=metadata, data=steps)
     if chart_type_upper == ChartType.HISTOGRAM.value:
         bins: List[HistogramBin] = []
         source = series[0].data if series else []
         if source:
+            inferred_width = _histogram_bin_width_from_points(source)
             for idx, point in enumerate(source):
                 start = _coerce_float(point.x)
-                end = start
                 if idx + 1 < len(source):
                     end = _coerce_float(source[idx + 1].x)
+                else:
+                    end = start + inferred_width if inferred_width > 0 else start
                 freq = _coerce_float(point.y)
-                if start is None or end is None or freq is None:
-                    continue
                 bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
-        return Histogram(metadata=metadata, data=bins, bin_count=max(1, len(bins)))
+        return Histogram(
+            metadata=metadata,
+            data=bins,
+            bin_count=max(1, len(bins)),
+            bin_width=inferred_width if source else None,
+        )
     if chart_type_upper == ChartType.BOX.value:
         values = sorted(_flatten_y_values(series))
         if not values:
@@ -505,8 +528,4 @@ def build_chart_dto(
         )
         return BoxPlot(metadata=metadata, data=[box])
 
-    logger.warning(
-        "Chart type %s not yet implemented; defaulting to LINE rendering",
-        plan_chart.chart_type,
-    )
-    return LineChart(metadata=metadata, series=series)
+    raise ValueError(f"Unsupported chart type for DTO mapping: {plan_chart.chart_type}")

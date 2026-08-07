@@ -1,0 +1,102 @@
+{
+  "category": "splits",
+  "user_utterance": "Show me DTN grouped by age in 10-year buckets",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ],
+    "chart_type": [
+      "BAR"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN",
+            "percentile": null
+          },
+          "splits": [
+            {
+              "kind": "AGE",
+              "field": null,
+              "categories": null,
+              "buckets": [
+                {
+                  "min": 0,
+                  "max": 10
+                },
+                {
+                  "min": 10,
+                  "max": 20
+                },
+                {
+                  "min": 20,
+                  "max": 30
+                },
+                {
+                  "min": 30,
+                  "max": 40
+                },
+                {
+                  "min": 40,
+                  "max": 50
+                },
+                {
+                  "min": 50,
+                  "max": 60
+                },
+                {
+                  "min": 60,
+                  "max": 70
+                },
+                {
+                  "min": 70,
+                  "max": 80
+                },
+                {
+                  "min": 80,
+                  "max": 90
+                },
+                {
+                  "min": 90,
+                  "max": 100
+                }
+              ]
+            }
+          ],
+          "time": null,
+          "x_axis": {
+            "role": "CATEGORY",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "label": null,
+            "unit": null,
+            "aggregation": "MEDIAN",
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "DTN",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

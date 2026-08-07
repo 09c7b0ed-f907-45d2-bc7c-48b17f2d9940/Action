@@ -129,16 +129,17 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                         return
                     query_pretty = pretty_print_graphql_query(query_text_any)
 
-                    dispatcher.utter_message(
-                        json_message={
-                            "type": "visualization_graphql_query",
-                            "trace_id": trace_id,
-                            "request_label": payload.get("request_label"),
-                            "group_by_field": payload.get("group_by_field"),
-                            "query_hash": payload.get("query_hash"),
-                            "query": query_pretty,
-                        }
-                    )
+                    if _EMIT_QUERY_DEBUG:
+                        dispatcher.utter_message(
+                            json_message={
+                                "type": "visualization_graphql_query",
+                                "trace_id": trace_id,
+                                "request_label": payload.get("request_label"),
+                                "group_by_field": payload.get("group_by_field"),
+                                "query_hash": payload.get("query_hash"),
+                                "query": query_pretty,
+                            }
+                        )
                     if _EMIT_QUERY_DEBUG:
                         dispatcher.utter_message(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
 

@@ -1,18 +1,80 @@
 from __future__ import annotations
 
+import calendar
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import TimePeriod
+from src.executors.planning.ssot_metric_defaults import get_enum_labels
 from src.shared.ssot_loader import get_enum_option_label, get_metric_display_name
 
 
-def metric_label_from_alias(metric_alias: str) -> str:
+def _metric_code_from_alias(metric_alias: str) -> str:
     code = metric_alias
     if code.lower().startswith("metric_"):
         code = code[len("metric_") :]
-    return get_metric_display_name(code.upper())
+    return code.upper()
+
+
+def metric_label_from_alias(metric_alias: str) -> str:
+    return get_metric_display_name(_metric_code_from_alias(metric_alias))
+
+
+def _is_calendar_month(start_dt: datetime, end_dt: datetime) -> bool:
+    if start_dt.year != end_dt.year or start_dt.month != end_dt.month or start_dt.day != 1:
+        return False
+    return end_dt.day == calendar.monthrange(start_dt.year, start_dt.month)[1]
+
+
+def _is_calendar_quarter(start_dt: datetime, end_dt: datetime) -> bool:
+    if start_dt.day != 1 or start_dt.month not in (1, 4, 7, 10):
+        return False
+    last_month = start_dt.month + 2
+    if end_dt.year != start_dt.year or end_dt.month != last_month:
+        return False
+    return end_dt.day == calendar.monthrange(end_dt.year, last_month)[1]
+
+
+def _is_calendar_year(start_dt: datetime, end_dt: datetime) -> bool:
+    return (start_dt.month, start_dt.day) == (1, 1) and (end_dt.year, end_dt.month, end_dt.day) == (start_dt.year, 12, 31)
+
+
+def _grouped_time_period_label(tp_start: str, tp_end: Optional[str]) -> str:
+    """Label for one bucket of a grouped/time-series chart.
+
+    Previously hardcoded to "%Y-%m" for every bucket regardless of its real
+    span, which collapsed e.g. 30 distinct single-day buckets onto 1-2 month
+    labels -- a "last 30 days, daily" line chart rendered as if it had ~2
+    data points instead of 30. A bucket that's a genuine, calendar-aligned
+    month/quarter/year (start/end fall exactly on that period's boundaries)
+    still gets the clean "%Y-%m" / "%Y-Qn" / "%Y" label those grains are
+    meant to show; anything else (a single day, a week, or any other
+    non-calendar-aligned span) gets full date precision so distinct buckets
+    can never share a label.
+    """
+    try:
+        start_dt = datetime.fromisoformat(tp_start)
+    except ValueError as exc:
+        raise ValueError(f"Invalid ISO date in grouped time period label: {tp_start!r}") from exc
+
+    end_dt: Optional[datetime] = None
+    if tp_end:
+        try:
+            end_dt = datetime.fromisoformat(tp_end)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ISO date in grouped time period label: {tp_end!r}") from exc
+
+    if end_dt is not None:
+        if _is_calendar_year(start_dt, end_dt):
+            return start_dt.strftime("%Y")
+        if _is_calendar_quarter(start_dt, end_dt):
+            quarter = (start_dt.month - 1) // 3 + 1
+            return f"{start_dt.year}-Q{quarter}"
+        if _is_calendar_month(start_dt, end_dt):
+            return start_dt.strftime("%Y-%m")
+
+    return start_dt.strftime("%Y-%m-%d")
 
 
 def period_to_label(tp: TimePeriod) -> str:
@@ -22,8 +84,10 @@ def period_to_label(tp: TimePeriod) -> str:
         try:
             dt = datetime.fromisoformat(start)
             return dt.strftime("%Y-%m")
-        except Exception:
-            pass
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid ISO start date in time period: {start!r}"
+            ) from exc
     if isinstance(start, str) and isinstance(end, str) and start and end:
         return f"{start} to {end}"
     if isinstance(start, str) and start:
@@ -75,7 +139,7 @@ def map_metrics_payload_to_series(
     group_by_field: Optional[str],
     add_time_period_labels: bool,
     scope_label: Optional[str] = None,
-    batched_time_periods: Optional[List[Any]] = None,  # ADD THIS
+    batched_time_periods: Optional[List[Any]] = None,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
 
@@ -87,11 +151,7 @@ def map_metrics_payload_to_series(
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
 
-            # Some plans (e.g., GroupBySex when backend groupBy enum is unavailable)
-            # are compiled into multiple filtered requests, one per category.
-            # In that case `group_by_field` is None, but non-empty label_parts
-            # still indicate grouped-style output should be produced from stats.
-            is_grouped_or_time = bool(group_by_field) or add_time_period_labels or bool(label_parts)
+            is_grouped_or_time = bool(group_by_field) or add_time_period_labels
             if is_grouped_or_time:
                 x_value: str
                 tp_start: Optional[str] = None
@@ -107,16 +167,10 @@ def map_metrics_payload_to_series(
                         tp_end = getattr(tp, "endDate", None) or getattr(tp, "end_date", None)
 
                 if add_time_period_labels and tp_start:
-                    try:
-                        dt = datetime.fromisoformat(str(tp_start))
-                        x_value = dt.strftime("%Y-%m")
-                    except Exception:
-                        x_value = f"{tp_start} to {tp_end}" if tp_end else str(tp_start)
+                    x_value = _grouped_time_period_label(str(tp_start), str(tp_end) if tp_end else None)
                 elif server_label:
                     mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                     x_value = mapped or server_label
-                elif label_parts:
-                    x_value = label_parts[-1]
                 else:
                     x_value = "value"
 
@@ -128,13 +182,17 @@ def map_metrics_payload_to_series(
                 elif kpi.kpi1.case_count:
                     try:
                         y_value = float(kpi.kpi1.case_count[0])
-                    except Exception:
-                        y_value = None
+                    except (TypeError, ValueError, IndexError) as exc:
+                        raise ValueError(
+                            "Grouped KPI case_count must provide a numeric first value"
+                        ) from exc
 
                 # Preserve explicit time buckets as missing points (y=None)
                 # so frontend can render gaps instead of implied zeros.
                 if y_value is None and not (add_time_period_labels and tp_start):
-                    continue
+                    raise ValueError(
+                        "Grouped KPI row is missing numeric y-value (median/mean/case_count[0])."
+                    )
 
                 name_parts: List[str] = []
                 if include_metric_alias:
@@ -155,8 +213,23 @@ def map_metrics_payload_to_series(
                 )
                 continue
 
-            if not kpi.kpi1.d1:
-                continue
+            metric_labels = getattr(metric, "labels", None)
+            metric_code = _metric_code_from_alias(metric_name)
+            case_counts = kpi.kpi1.case_count or []
+
+            if not metric_labels and not kpi.kpi1.d1 and len(case_counts) == 1 and kpi.kpi1.cohort_size is not None:
+                # Boolean-shaped Enum metric (e.g. WAKEUP_STROKE): backend returns a single
+                # caseCount (the "true"/first-category count) with no labels array. Fall back
+                # to the SSOT's own category labels and derive the complement count.
+                ssot_labels = get_enum_labels(metric_code)
+                if ssot_labels and len(ssot_labels) >= 2:
+                    metric_labels = ssot_labels[:2]
+                    case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
+
+            if not kpi.kpi1.d1 and not metric_labels:
+                raise ValueError(
+                    "Distribution KPI payload is missing d1 histogram/series data."
+                )
 
             parts: List[str] = []
             if include_metric_alias:
@@ -181,10 +254,25 @@ def map_metrics_payload_to_series(
                     parts.append(end)
 
             series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
+
+            if kpi.kpi1.d1:
+                points = [ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)]
+            else:
+                # Categorical (Enum) metric: labels and caseCount are parallel arrays,
+                # one entry per category (e.g. male/female/unknown), not a numeric histogram.
+                if len(case_counts) != len(metric_labels or []):
+                    raise ValueError(
+                        "Categorical KPI payload has mismatched labels/caseCount lengths."
+                    )
+                points = [
+                    ChartPoint(x=label, y=float(count))
+                    for label, count in zip(cast(List[str], metric_labels), case_counts)
+                ]
+
             series.append(
                 ChartSeries(
                     name=series_name,
-                    data=[ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)],
+                    data=points,
                 )
             )
 
