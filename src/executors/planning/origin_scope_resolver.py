@@ -25,9 +25,7 @@ def _parse_max_provider_ids(raw: str) -> int:
 
 _MAX_PROVIDER_IDS = _parse_max_provider_ids(_MAX_PROVIDER_IDS_RAW)
 
-_PROVIDER_CACHE_TTL_SECONDS_RAW = (
-    env_util.get_env("EXECUTOR_PROVIDER_CACHE_TTL_SECONDS", default="300") or "300"
-)
+_PROVIDER_CACHE_TTL_SECONDS_RAW = env_util.get_env("EXECUTOR_PROVIDER_CACHE_TTL_SECONDS", default="300") or "300"
 
 
 def _parse_provider_cache_ttl_seconds(raw: str) -> int:
@@ -37,9 +35,7 @@ def _parse_provider_cache_ttl_seconds(raw: str) -> int:
         return 300
 
 
-_PROVIDER_CACHE_TTL_SECONDS = _parse_provider_cache_ttl_seconds(
-    _PROVIDER_CACHE_TTL_SECONDS_RAW
-)
+_PROVIDER_CACHE_TTL_SECONDS = _parse_provider_cache_ttl_seconds(_PROVIDER_CACHE_TTL_SECONDS_RAW)
 _MAX_PROVIDER_CACHE_ENTRIES = 64
 _PROVIDER_LIST_CACHE: Dict[tuple[str, str, str], tuple[float, List[Dict[str, Any]]]] = {}
 
@@ -405,12 +401,8 @@ def _search_accessible_providers_by_name(
     client = get_analytics_center_client()
     matched: List[Dict[str, Any]] = []
     seen_ids: set[int] = set()
-    exact_found: Dict[str, bool] = {
-        requested: False for requested in requested_names
-    }
-    requested_norms = {
-        requested: _normalize_text(requested) for requested in requested_names
-    }
+    exact_found: Dict[str, bool] = {requested: False for requested in requested_names}
+    requested_norms = {requested: _normalize_text(requested) for requested in requested_names}
     offset = 0
     limit = 200
 
@@ -420,6 +412,7 @@ def _search_accessible_providers_by_name(
                 user_sub=user_sub,
                 trace_id=trace_id,
                 country_code=country_code,
+                user=user_sub,
                 limit=limit,
                 offset=offset,
                 raise_on_error=True,
@@ -548,25 +541,27 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
     return out[:_MAX_PROVIDER_IDS]
 
 
-def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSpec]:
+def _resolve_mine_scope(user_sub: str, trace_id: str) -> tuple[Optional[S.DataOriginSpec], Optional[str]]:
     client = get_analytics_center_client()
     try:
         scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=True)
     except AnalyticsCenterError as exc:
         _raise_if_auth_session_error(exc)
-        return None
+        return None, None
     if not isinstance(scope, dict):
-        return None
+        return None, None
+
+    label: Optional[str] = scope.get("label") or None
 
     provider_id_any = scope.get("provider_id")
     if isinstance(provider_id_any, int):
-        return S.DataOriginSpec(providerId=[provider_id_any])
+        return S.DataOriginSpec(providerId=[provider_id_any]), label
 
     provider_group_id_any = scope.get("provider_group_id")
     if isinstance(provider_group_id_any, int):
-        return S.DataOriginSpec(providerGroupId=[provider_group_id_any])
+        return S.DataOriginSpec(providerGroupId=[provider_group_id_any]), label
 
-    return None
+    return None, None
 
 
 def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOriginSpec:
@@ -834,7 +829,7 @@ def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub
 
 
 def _infer_user_country_code(user_sub: str, trace_id: str) -> Optional[str]:
-    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+    mine_scope, _ = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
     if mine_scope is None:
         return None
     return _infer_country_code_from_data_origin(data_origin=mine_scope, user_sub=user_sub, trace_id=trace_id)
@@ -845,37 +840,37 @@ def _resolve_scope(
     user_sub: str,
     trace_id: str,
     inferred_country_code: Optional[str] = None,
-) -> Optional[S.DataOriginSpec]:
+) -> tuple[Optional[S.DataOriginSpec], Optional[str]]:
     scope_type = (scope.scope_type or "").strip().lower()
     value = scope.value
 
     if scope_type == "mine":
-        resolved = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+        resolved, mine_label = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
         if resolved is None:
             raise OriginScopeResolutionError(
                 "I could not resolve your default hospital scope right now.",
                 clarification_type="mine",
             )
-        return resolved
+        return resolved, mine_label
 
     if scope_type == "provider_id":
         if isinstance(value, int):
-            return S.DataOriginSpec(providerId=[value])
+            return S.DataOriginSpec(providerId=[value]), None
         if isinstance(value, str) and value.strip().isdigit():
-            return S.DataOriginSpec(providerId=[int(value.strip())])
+            return S.DataOriginSpec(providerId=[int(value.strip())]), None
         raise OriginScopeResolutionError(
             "Provider scope requires a numeric provider ID.",
             clarification_type="provider_id",
         )
 
     if scope_type == "provider_name":
-        return _resolve_provider_name(value=value, user_sub=user_sub, trace_id=trace_id)
+        return _resolve_provider_name(value=value, user_sub=user_sub, trace_id=trace_id), None
 
     if scope_type == "provider_group_id":
         if isinstance(value, int):
-            return S.DataOriginSpec(providerGroupId=[value])
+            return S.DataOriginSpec(providerGroupId=[value]), None
         if isinstance(value, str) and value.strip().isdigit():
-            return S.DataOriginSpec(providerGroupId=[int(value.strip())])
+            return S.DataOriginSpec(providerGroupId=[int(value.strip())]), None
         raise OriginScopeResolutionError(
             "Provider-group scope requires a numeric group ID.",
             clarification_type="provider_group_id",
@@ -887,7 +882,7 @@ def _resolve_scope(
             country_code=scope.country_code or inferred_country_code,
             user_sub=user_sub,
             trace_id=trace_id,
-        )
+        ), None
 
     if scope_type == "country_average":
         return _resolve_country_scope(
@@ -895,7 +890,7 @@ def _resolve_scope(
             country_code=scope.country_code or inferred_country_code,
             user_sub=user_sub,
             trace_id=trace_id,
-        )
+        ), None
 
     if scope_type == "all_accessible":
         providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
@@ -905,11 +900,11 @@ def _resolve_scope(
             if provider_id is not None and provider_id not in provider_ids:
                 provider_ids.append(provider_id)
         if not provider_ids:
-            return None
-        return S.DataOriginSpec(providerId=provider_ids)
+            return None, None
+        return S.DataOriginSpec(providerId=provider_ids), None
 
     if scope_type == "provider_group_name":
-        return _resolve_provider_group_name(value=value, user_sub=user_sub, trace_id=trace_id)
+        return _resolve_provider_group_name(value=value, user_sub=user_sub, trace_id=trace_id), None
 
     raise OriginScopeResolutionError(
         f"Unsupported origin scope type: {scope_type}",
@@ -945,7 +940,7 @@ def _resolve_metric_origin(
 
     if scope_ref is not None:
         try:
-            resolved_data_origin = _resolve_scope(
+            resolved_data_origin, resolved_scope_label = _resolve_scope(
                 scope=scope_ref,
                 user_sub=user_sub,
                 trace_id=trace_id,
@@ -969,6 +964,7 @@ def _resolve_metric_origin(
                 ),
             )
             resolved_data_origin = None
+            resolved_scope_label = None
         except Exception:
             if not fail_open_for_metric:
                 raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.")
@@ -987,11 +983,19 @@ def _resolve_metric_origin(
                 ),
             )
             resolved_data_origin = None
+            resolved_scope_label = None
+    else:
+        resolved_scope_label = None
+
+    if scope_ref is not None and isinstance(resolved_scope_label, str) and resolved_scope_label.strip():
+        resolved_scope_ref = scope_ref.model_copy(update={"label": resolved_scope_label.strip()})
+    else:
+        resolved_scope_ref = scope_ref
 
     return S.MetricSpec(
         metric=metric.metric,
         dataOrigin=resolved_data_origin,
-        originScope=scope_ref,
+        originScope=resolved_scope_ref,
     )
 
 

@@ -90,6 +90,79 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
         self.assertEqual(len(providers), 1)
         self.assertEqual(providers[0]["id"], 1853)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].get("user"), "user-1")
+
+    def test_resolve_metric_origin_enriches_mine_scope_with_provider_label(self) -> None:
+        metric = S.MetricSpec(
+            metric="DTN",
+            originScope=S.OriginScopeSpec(scopeType="mine"),
+        )
+
+        with patch.object(
+            origin_scope_resolver,
+            "_resolve_scope",
+            return_value=(S.DataOriginSpec(providerId=[1853]), "Army Alhama de Murcia Hospital"),
+        ):
+            resolved = origin_scope_resolver._resolve_metric_origin(
+                metric,
+                default_scope=None,
+                user_sub="user-1",
+                trace_id="trace-3",
+                fail_open_for_default_scope=False,
+                inferred_country_code=None,
+            )
+
+        self.assertIsNotNone(resolved.origin_scope)
+        self.assertEqual(resolved.origin_scope.label, "Army Alhama de Murcia Hospital")
+        self.assertEqual(resolved.data_origin.provider_id, [1853])
+
+    def test_resolve_metric_origin_overwrites_generic_mine_label(self) -> None:
+        for placeholder in ["My hospital", "mine", "My Hospital", "our hospital"]:
+            with self.subTest(placeholder=placeholder):
+                metric = S.MetricSpec(
+                    metric="DTN",
+                    originScope=S.OriginScopeSpec(scopeType="mine", label=placeholder),
+                )
+
+                with patch.object(
+                    origin_scope_resolver,
+                    "_resolve_scope",
+                    return_value=(S.DataOriginSpec(providerId=[279]), "Aalborg University - Hospital"),
+                ):
+                    resolved = origin_scope_resolver._resolve_metric_origin(
+                        metric,
+                        default_scope=None,
+                        user_sub="user-1",
+                        trace_id="trace-4",
+                        fail_open_for_default_scope=False,
+                        inferred_country_code=None,
+                    )
+
+                self.assertEqual(resolved.origin_scope.label, "Aalborg University - Hospital")
+
+    def test_resolve_metric_origin_keeps_scope_label_when_resolver_returns_none(self) -> None:
+        # When _resolve_scope returns no label (non-mine scopes), the original
+        # scope label is preserved unchanged.
+        metric = S.MetricSpec(
+            metric="DTN",
+            originScope=S.OriginScopeSpec(scopeType="provider_name", value="My Clinic", label="My Clinic"),
+        )
+
+        with patch.object(
+            origin_scope_resolver,
+            "_resolve_scope",
+            return_value=(S.DataOriginSpec(providerId=[279]), None),
+        ):
+            resolved = origin_scope_resolver._resolve_metric_origin(
+                metric,
+                default_scope=None,
+                user_sub="user-1",
+                trace_id="trace-5",
+                fail_open_for_default_scope=False,
+                inferred_country_code=None,
+            )
+
+        self.assertEqual(resolved.origin_scope.label, "My Clinic")
 
 
 if __name__ == "__main__":
