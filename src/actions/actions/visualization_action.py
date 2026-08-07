@@ -347,26 +347,21 @@ _LATEST_ENTITY_PRECEDENCE_KEYS = {
     "date",
 }
 
-# Subset of _LATEST_ENTITY_PRECEDENCE_KEYS that identify *this specific request's*
-# comparison target rather than sticky session state (e.g. a date range, which
-# should keep applying to follow-up turns that don't restate it). If the latest
-# turn doesn't mention one of these, any value inherited from earlier turns in the
-# thread must be dropped rather than silently carried forward -- otherwise a
-# hospital named in an earlier Mann-Whitney comparison leaks into an unrelated
-# follow-up chart request that names no hospital at all.
-_LATEST_ENTITY_CLEAR_ON_ABSENCE_KEYS = {
-    "hospital_name",
-    "hospital_scope_reference",
-    "country_code",
-    "group_id",
-}
-
 
 def merge_latest_with_thread_entities(
     latest_entities: Dict[str, Any],
     events: List[Dict[str, Any]],
     fallback_limit: int = 12,
 ) -> Dict[str, Any]:
+    """Merge the current turn's entities with the anchored visualization
+    thread's entities. Only called when the caller has already decided the
+    thread should carry forward at all (see
+    _should_carry_forward_visualization_context) -- a fresh, unrelated
+    generate_visualization request skips this entirely rather than being
+    merged and then selectively un-merged, so there's nothing here to guard
+    against a stale identity entity (hospital, country, ...) leaking into an
+    unrelated request.
+    """
     thread_entities = _collect_visualization_thread_entities(events, fallback_limit=fallback_limit)
     if not thread_entities:
         return dict(latest_entities)
@@ -376,15 +371,62 @@ def merge_latest_with_thread_entities(
         if isinstance(value, list):
             merged[key] = _dedupe_list_values(cast(List[Any], value))
 
-    # For cohort/statistical keys, the latest user turn must be authoritative: it
-    # overrides an inherited thread value outright, and for scope-identity keys
-    # (not sticky filters like date) its absence clears any inherited value too.
+    # A restated identity/cohort key in the latest turn is authoritative: it
+    # replaces (not appends to) whatever was inherited from earlier turns.
     for key in _LATEST_ENTITY_PRECEDENCE_KEYS:
         if key in latest_entities:
             merged[key] = latest_entities[key]
-        elif key in _LATEST_ENTITY_CLEAR_ON_ABSENCE_KEYS:
-            merged.pop(key, None)
     return merged
+
+
+def _is_awaiting_clarification_reply(events: List[Dict[str, Any]]) -> bool:
+    """Whether the bot's most recent utterance before the current turn was a
+    clarification request -- i.e. this turn completes that pending ask rather
+    than starting a fresh one.
+
+    Deliberately derived from events rather than the
+    awaiting_visualization_clarification slot: action_clarify_visualization_request
+    flips that slot to False as part of its own return events (before its
+    FollowupAction, action_oneshot_generate_visualization, re-derives this same
+    context later in the same turn), so the slot can't be read consistently by
+    both. The events are stable across both reads.
+    """
+    last_user_idx = -1
+    for idx in range(len(events) - 1, -1, -1):
+        if events[idx].get("event") == "user":
+            last_user_idx = idx
+            break
+    if last_user_idx < 0:
+        return False
+
+    for idx in range(last_user_idx - 1, -1, -1):
+        ev = events[idx]
+        if ev.get("event") != "bot":
+            continue
+        payload = _extract_bot_custom_payload(ev)
+        if payload and payload.get("type") == "visualization_query_decision":
+            return payload.get("decision") == "clarify"
+    return False
+
+
+def _should_carry_forward_visualization_context(intent_name: str, events: List[Dict[str, Any]]) -> bool:
+    """Whether this turn should inherit entities/history from earlier turns
+    in the visualization thread at all.
+
+    A fresh generate_visualization request starts clean: no entities, no
+    conversation history from earlier turns, full stop -- it's a new ask, not
+    a continuation. update_visualization explicitly means "modify the
+    existing plan", so it carries the thread forward by design. A reply while
+    the bot is awaiting clarification is completing the request that's
+    already anchored, not replacing it, so it also carries forward.
+    clarify_visualization carries forward even outside that state: per
+    rules/visualization.yml, its NLU training data is terse follow-on
+    instructions like "group by X" or "filter by Y", which only make sense as
+    a modification of the current chart, never as a standalone request.
+    """
+    if intent_name in ("update_visualization", "clarify_visualization"):
+        return True
+    return _is_awaiting_clarification_reply(events)
 
 
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -519,14 +561,20 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
-                extracted_entities = canonicalize_ssot_entities(
-                    merge_latest_with_thread_entities(
-                        canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg)),
-                        events,
-                        fallback_limit=fallback_limit,
+                intent_name = _extract_intent_name_from_user_event(latest_msg)
+                carry_forward = _should_carry_forward_visualization_context(intent_name, events)
+                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+                if carry_forward:
+                    extracted_entities = canonicalize_ssot_entities(
+                        merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit)
                     )
-                )
-                conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
+                    conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
+                else:
+                    # Fresh generate_visualization request, not completing a pending
+                    # clarification: start clean, no entities or history from earlier
+                    # turns (see _should_carry_forward_visualization_context).
+                    extracted_entities = latest_entities
+                    conversation_history = []
                 # The current turn's own text is the question; prior turns are carried
                 # via extracted_entities (structured) and conversation_history (passed
                 # separately to the orchestrator's own history field), not by joining
@@ -534,9 +582,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 # blending unrelated requests together.
                 planner_question = user_message
 
-                intent_name = _extract_intent_name_from_user_event(latest_msg)
-                is_update = intent_name == "update_visualization"
-                if is_update:
+                if carry_forward:
                     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
                     if latest_plan_summary:
                         planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
@@ -596,7 +642,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         timeout_seconds=_EXECUTE_PLAN_TIMEOUT_SECONDS,
                     ),
                 )
-                ctx.say(
+                dispatcher.utter_message(
                     json_message={
                         "type": "visualization_error",
                         "trace_id": trace_id,
@@ -606,44 +652,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         "retry": True,
                     }
                 )
-                ctx.say(
-                    text=translate(
-                        "action.common.error_with_context",
-                        language=language,
-                        params={
-                            "message": timeout_message,
-                            "code": "EXEC_TIMEOUT",
-                            "trace_id": trace_id,
-                        },
-                    )
-                )
-                return None
-            except asyncio.TimeoutError:
-                timeout_message = (
-                    "The visualization execution took too long and timed out. "
-                    "Please try again, narrow the scope, or shorten the date range."
-                )
-                logger.warning(
-                    "Visualization execution timed out",
-                    extra=_action_log_context(
-                        trace_id=trace_id,
-                        action_name=self.name(),
-                        event="actions.visualization.work.timeout",
-                        outcome="failure",
-                        timeout_seconds=_EXECUTE_PLAN_TIMEOUT_SECONDS,
-                    ),
-                )
-                ctx.say(
-                    json_message={
-                        "type": "visualization_error",
-                        "trace_id": trace_id,
-                        "error_code": "EXEC_TIMEOUT",
-                        "reason": "timeout",
-                        "message": timeout_message,
-                        "retry": True,
-                    }
-                )
-                ctx.say(
+                dispatcher.utter_message(
                     text=translate(
                         "action.common.error_with_context",
                         language=language,
@@ -703,13 +712,24 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     latest_meta = ctx.metadata
     latest_any = ctx.tracker_snapshot.get("latest_message")
     latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
-    extracted_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
     override_language = resolve_override_language(latest_meta, ctx.slots)
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
-    extracted_entities = canonicalize_ssot_entities(merge_latest_with_thread_entities(extracted_entities, events, fallback_limit=12))
-    conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
-    latest_plan_summary = _collect_latest_visualization_plan_summary(events)
+
+    intent_name = _extract_intent_name_from_user_event(latest_msg)
+    carry_forward = _should_carry_forward_visualization_context(intent_name, events)
+    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+    if carry_forward:
+        extracted_entities = canonicalize_ssot_entities(merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12))
+        conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
+        latest_plan_summary = _collect_latest_visualization_plan_summary(events)
+    else:
+        # Fresh generate_visualization request, not completing a pending
+        # clarification: start clean, no entities or history from earlier
+        # turns (see _should_carry_forward_visualization_context).
+        extracted_entities = latest_entities
+        conversation_history = []
+        latest_plan_summary = None
 
     # ctx.text is the current turn's own text; prior turns are carried via
     # extracted_entities (structured) and conversation_history (passed separately to
@@ -717,12 +737,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     # previously confused the planner into blending unrelated requests together.
     planner_question = ctx.text
 
-    latest_any = ctx.tracker_snapshot.get("latest_message")
-    latest_msg_for_intent = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
-    intent_name = _extract_intent_name_from_user_event(latest_msg_for_intent)
-    is_update = intent_name == "update_visualization"
-
-    if latest_plan_summary and is_update:
+    if latest_plan_summary:
         planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
 
     return {

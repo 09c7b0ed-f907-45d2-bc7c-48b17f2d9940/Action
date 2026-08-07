@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import datetime
 from typing import Any, Dict, List, Optional, cast
 
@@ -18,6 +19,62 @@ def _metric_code_from_alias(metric_alias: str) -> str:
 
 def metric_label_from_alias(metric_alias: str) -> str:
     return get_metric_display_name(_metric_code_from_alias(metric_alias))
+
+
+def _is_calendar_month(start_dt: datetime, end_dt: datetime) -> bool:
+    if start_dt.year != end_dt.year or start_dt.month != end_dt.month or start_dt.day != 1:
+        return False
+    return end_dt.day == calendar.monthrange(start_dt.year, start_dt.month)[1]
+
+
+def _is_calendar_quarter(start_dt: datetime, end_dt: datetime) -> bool:
+    if start_dt.day != 1 or start_dt.month not in (1, 4, 7, 10):
+        return False
+    last_month = start_dt.month + 2
+    if end_dt.year != start_dt.year or end_dt.month != last_month:
+        return False
+    return end_dt.day == calendar.monthrange(end_dt.year, last_month)[1]
+
+
+def _is_calendar_year(start_dt: datetime, end_dt: datetime) -> bool:
+    return (start_dt.month, start_dt.day) == (1, 1) and (end_dt.year, end_dt.month, end_dt.day) == (start_dt.year, 12, 31)
+
+
+def _grouped_time_period_label(tp_start: str, tp_end: Optional[str]) -> str:
+    """Label for one bucket of a grouped/time-series chart.
+
+    Previously hardcoded to "%Y-%m" for every bucket regardless of its real
+    span, which collapsed e.g. 30 distinct single-day buckets onto 1-2 month
+    labels -- a "last 30 days, daily" line chart rendered as if it had ~2
+    data points instead of 30. A bucket that's a genuine, calendar-aligned
+    month/quarter/year (start/end fall exactly on that period's boundaries)
+    still gets the clean "%Y-%m" / "%Y-Qn" / "%Y" label those grains are
+    meant to show; anything else (a single day, a week, or any other
+    non-calendar-aligned span) gets full date precision so distinct buckets
+    can never share a label.
+    """
+    try:
+        start_dt = datetime.fromisoformat(tp_start)
+    except ValueError as exc:
+        raise ValueError(f"Invalid ISO date in grouped time period label: {tp_start!r}") from exc
+
+    end_dt: Optional[datetime] = None
+    if tp_end:
+        try:
+            end_dt = datetime.fromisoformat(tp_end)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ISO date in grouped time period label: {tp_end!r}") from exc
+
+    if end_dt is not None:
+        if _is_calendar_year(start_dt, end_dt):
+            return start_dt.strftime("%Y")
+        if _is_calendar_quarter(start_dt, end_dt):
+            quarter = (start_dt.month - 1) // 3 + 1
+            return f"{start_dt.year}-Q{quarter}"
+        if _is_calendar_month(start_dt, end_dt):
+            return start_dt.strftime("%Y-%m")
+
+    return start_dt.strftime("%Y-%m-%d")
 
 
 def period_to_label(tp: TimePeriod) -> str:
@@ -110,13 +167,7 @@ def map_metrics_payload_to_series(
                         tp_end = getattr(tp, "endDate", None) or getattr(tp, "end_date", None)
 
                 if add_time_period_labels and tp_start:
-                    try:
-                        dt = datetime.fromisoformat(str(tp_start))
-                        x_value = dt.strftime("%Y-%m")
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"Invalid ISO date in grouped time period label: {tp_start!r}"
-                        ) from exc
+                    x_value = _grouped_time_period_label(str(tp_start), str(tp_end) if tp_end else None)
                 elif server_label:
                     mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                     x_value = mapped or server_label

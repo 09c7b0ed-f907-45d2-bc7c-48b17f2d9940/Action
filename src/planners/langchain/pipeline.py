@@ -34,6 +34,7 @@ from src.util.logging_utils import bind_current_context, log_context
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
 _ENABLE_PLAN_CACHE = True
+_ENABLE_PLAN_CRITIQUE = True
 
 _FEWSHOT_TOKEN_WEIGHT = 1.0
 _FEWSHOT_ENTITY_KEY_WEIGHT = 6.0
@@ -65,7 +66,16 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
-_PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
+# 30s was tighter than observed real-world LLM latency for this call (plan
+# generation and, since the critique pass, plan critique too both routinely
+# take 20-45s), causing a per-attempt PlannerTimeoutError on otherwise-normal
+# requests. Env-configurable to match its sibling timeouts in
+# request_orchestrator.py rather than requiring a code change to retune.
+_PLANNER_REQUEST_TIMEOUT_RAW = env.get_env("ACTIONS_LLM_PLANNER_REQUEST_TIMEOUT_SECONDS", default="") or ""
+try:
+    _PLANNER_REQUEST_TIMEOUT_SECONDS = max(1.0, float(_PLANNER_REQUEST_TIMEOUT_RAW))
+except Exception:
+    _PLANNER_REQUEST_TIMEOUT_SECONDS = 45.0
 _MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
@@ -149,6 +159,52 @@ def _assert_required_semantics(plan: AnalysisPlan) -> None:
         if chart.semantics.measure is None:
             raise ValueError(
                 f"Invalid AnalysisPlan: charts[{idx}].semantics.measure is required"
+            )
+
+
+def _collect_date_filter_bounds(node: Any) -> List[tuple[str, str]]:
+    """Recursively collect (operator, value) pairs from DateFilter nodes
+    nested anywhere under `node`, through And/Or/Not combinators."""
+    from src.domain.langchain.schema import AndFilter, DateFilter, NotFilter, OrFilter
+
+    if node is None:
+        return []
+    if isinstance(node, DateFilter):
+        return [(node.operator, node.value)]
+    if isinstance(node, AndFilter):
+        return [pair for child in node.and_ for pair in _collect_date_filter_bounds(child)]
+    if isinstance(node, OrFilter):
+        return [pair for child in node.or_ for pair in _collect_date_filter_bounds(child)]
+    if isinstance(node, NotFilter):
+        return _collect_date_filter_bounds(node.not_)
+    return []
+
+
+def _assert_no_redundant_date_encoding(plan: AnalysisPlan) -> None:
+    """plan_system.txt explicitly instructs the planner to use
+    semantics.time.window (TimeRange) for an explicit absolute date range and
+    NOT also add a redundant DateFilter for that same range -- but this is
+    occasionally violated live (the same bounds encoded both ways). This is a
+    purely mechanical, unambiguous structural rule, so it's enforced
+    deterministically here rather than left to the critique pass's fuzzier,
+    request-faithfulness judgment (which is scoped to whether the plan
+    matches the request, not whether it duplicates itself).
+    """
+    from src.domain.langchain.schema import TimeRange
+
+    for idx, chart in enumerate(plan.charts or []):
+        window = chart.semantics.time.window if chart.semantics and chart.semantics.time else None
+        if not isinstance(window, TimeRange):
+            continue
+        bounds = _collect_date_filter_bounds(chart.filters)
+        ge_values = {value for op, value in bounds if op == "GE"}
+        le_values = {value for op, value in bounds if op == "LE"}
+        if window.start_date in ge_values and window.end_date in le_values:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{idx}] encodes the same date range twice -- "
+                f"both semantics.time.window (TimeRange {window.start_date} to {window.end_date}) "
+                "and an equivalent DateFilter in filters. Keep only semantics.time.window for this "
+                "range and remove the redundant DateFilter."
             )
 
 
@@ -482,6 +538,55 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
 
 plan_chain: Any = plan_prompt | llm
 
+critic_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
+    [
+        ("system", load_prompt_text("critic_system")),
+        (
+            "user",
+            "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nCANDIDATE_PLAN_JSON:\n{candidate_plan}",
+        ),
+    ]
+)
+
+critic_chain: Any = critic_prompt | llm
+
+
+def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
+    """Ask an independent LLM pass whether `plan` faithfully implements
+    `question`/`entities`, rather than hand-coding a comparator per failure
+    mode (chart count, date fidelity, dropped update fields, ...). Returns a
+    human-readable issue summary on mismatch, None when the plan checks out.
+
+    This is a holistic judgment call, not a deterministic guarantee -- it
+    complements (does not replace) schema-level validation, which stays
+    fully deterministic. Any exception here is treated as "no complaint"
+    rather than blocking planning on the critic itself being unavailable.
+    """
+    if not _ENABLE_PLAN_CRITIQUE:
+        return None
+    try:
+        raw_result: Any = _invoke_with_timeout(
+            critic_chain,
+            {
+                "question": question,
+                "entities": json.dumps(entities),
+                "candidate_plan": plan.model_dump_json(indent=2),
+            },
+            label="plan_critique",
+        )
+        verdict = json.loads(_extract_json_block(_extract_text(raw_result)))
+    except Exception:
+        logger.exception("[Planner] Plan critique pass failed; proceeding without it")
+        return None
+
+    if not isinstance(verdict, dict) or verdict.get("ok") is True:
+        return None
+
+    issues = verdict.get("issues")
+    if isinstance(issues, list) and issues:
+        return "; ".join(str(issue) for issue in issues)
+    return "Plan does not faithfully match the request."
+
 
 class GeneratePlanDebug(TypedDict):
     """Typed structure for debug output of generate_analysis_plan."""
@@ -616,18 +721,21 @@ def generate_analysis_plan(
             if progress_cb is not None:
                 progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
 
-            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
-            steps.append(
-                {
-                    "step": f"plan_attempt_{attempt}",
-                    "prompt": "(prompt logging disabled)",
-                    "response": raw_result,
-                }
-            )
-
             try:
+                raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
+                steps.append(
+                    {
+                        "step": f"plan_attempt_{attempt}",
+                        "prompt": "(prompt logging disabled)",
+                        "response": raw_result,
+                    }
+                )
                 result = _coerce_analysis_plan(raw_result)
                 _assert_required_semantics(result)
+                _assert_no_redundant_date_encoding(result)
+                critique_issues = _critique_plan(question, entities, result)
+                if critique_issues:
+                    raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break
             except Exception as exc:
                 last_error = exc
@@ -639,8 +747,13 @@ def generate_analysis_plan(
                     }
                 )
                 if attempt >= total_attempts:
+                    logger.warning(
+                        "[Planner] Exhausted retries with an unresolved validation/critique issue; "
+                        "returning last attempt as-is: %s",
+                        exc,
+                    )
                     break
-                plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+                plan_inputs["reasoning"] = f"Previous output was rejected: {exc}. Return ONLY a corrected, valid AnalysisPlan JSON object."
 
         if result is None:
             raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error

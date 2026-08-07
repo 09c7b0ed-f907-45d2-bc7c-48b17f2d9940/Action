@@ -283,6 +283,29 @@ FilterNode = Union[
 ]
 
 
+def _normalize_filter_node(value: Any) -> Any:
+    """Accept a bare JSON list of filters as an equivalent, unambiguous
+    alternate encoding of a single FilterNode.
+
+    The planner LLM sometimes emits "filters": [{"type": "SexFilter", ...}]
+    instead of wrapping multiple filters in an explicit AndFilter (or just
+    the bare object for a single filter) -- a reasonable, lossless way to
+    write "these filters" that FilterNode's schema doesn't accept as-is,
+    which previously caused a validation error (and downstream "I need a bit
+    more detail" clarify) for a plan the LLM had already correctly decided.
+    This reshapes the same, unmodified filter content into the schema's
+    canonical envelope; it never invents or drops a filter the LLM specified.
+    """
+    if not isinstance(value, list):
+        return value
+    items = cast(List[Any], value)
+    if not items:
+        return None
+    if len(items) == 1:
+        return items[0]
+    return {"type": "AndFilter", "and_": items}
+
+
 class GroupBySex(HashableBaseModel):
     """
     Grouping by patient sex.
@@ -861,6 +884,10 @@ class ChartSpec(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
+    @field_validator("filters", mode="before")
+    def normalize_filters(cls, v: Any) -> Any:
+        return _normalize_filter_node(v)
+
     @field_validator("chart_type")
     def validate_chart_type(cls, v: str) -> str:
         v_norm = v.upper()
@@ -890,6 +917,10 @@ class StatisticalTestSpec(BaseModel):
     metrics: List[MetricSpec]
     group_by: Optional[List[GroupBySpec]] = None
     filters: Optional[FilterNode] = None
+
+    @field_validator("filters", mode="before")
+    def normalize_filters(cls, v: Any) -> Any:
+        return _normalize_filter_node(v)
 
     @field_validator("test_type")
     def validate_test_type(cls, v: str) -> str:

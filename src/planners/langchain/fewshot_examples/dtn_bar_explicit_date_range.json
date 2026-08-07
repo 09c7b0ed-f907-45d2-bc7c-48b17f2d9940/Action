@@ -1,6 +1,6 @@
 {
   "category": "filters",
-  "user_utterance": "Show me a bar chart of DTN for patients in 2026",
+  "user_utterance": "Create a bar chart for DTN from 2023-01-01 to 2023-12-31",
   "entities_detected": {
     "metric": [
       "DTN"
@@ -9,7 +9,8 @@
       "BAR"
     ],
     "date": [
-      "2026"
+      "2023-01-01",
+      "2023-12-31"
     ]
   },
   "assistant": {
@@ -23,7 +24,14 @@
             "percentile": null
           },
           "splits": null,
-          "time": null,
+          "time": {
+            "grain": null,
+            "window": {
+              "start_date": "2023-01-01",
+              "end_date": "2023-12-31"
+            },
+            "include_partial": null
+          },
           "x_axis": {
             "role": "METRIC_VALUE",
             "metric": "DTN",
@@ -41,21 +49,7 @@
             "grain": null
           }
         },
-        "filters": {
-          "type": "AndFilter",
-          "and_": [
-            {
-              "operator": "GE",
-              "type": "DateFilter",
-              "value": "2026-01-01"
-            },
-            {
-              "operator": "LE",
-              "type": "DateFilter",
-              "value": "2026-12-31"
-            }
-          ]
-        },
+        "filters": null,
         "metrics": [
           {
             "metric": "DTN",
