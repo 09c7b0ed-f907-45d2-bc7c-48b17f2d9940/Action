@@ -240,6 +240,46 @@ class TimeGroupingMonthAxisTests(unittest.TestCase):
 
         self.assertIn("case_count", str(err.exception))
 
+    def test_map_metrics_payload_to_series_uses_single_aggregate_point_for_filter_grouped_bucket(self) -> None:
+        """Regression test: an age/NIHSS bucket split (or any boolean split) has
+        no server-side groupBy -- GraphQL has no native groupBy for arbitrary
+        buckets, so each bucket is a separate, case-filtered request instead
+        (group_by_field=None). Each such request's kpi1 carries BOTH the
+        bucket-scoped aggregate (median) AND a full d1 distribution
+        (build_metric_requests always requests both for numeric metrics).
+        Previously, group_by_field=None alone decided which branch to take, so
+        every bucket's series silently rendered the 52-point d1 histogram
+        instead of the one point that actually represents that bucket --
+        is_filter_grouped is the signal that this batch, despite having no
+        server_groupby, still represents exactly one category.
+        """
+        kpi = SimpleNamespace(
+            kpi1=SimpleNamespace(
+                median=42.0,
+                mean=99.0,
+                case_count=[7],
+                d1=SimpleNamespace(edges=[0, 10, 20], case_count=[1, 2, 3]),
+            ),
+            grouped_by=None,
+            time_period=None,
+            data_origin=None,
+        )
+        metric_payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi])}
+
+        series = map_metrics_payload_to_series(
+            metrics_payload=metric_payload,
+            label_parts=["10-20"],
+            include_metric_alias=True,
+            group_by_field=None,
+            add_time_period_labels=False,
+            is_filter_grouped=True,
+        )
+
+        self.assertEqual(len(series), 1)
+        self.assertEqual(len(series[0].data), 1, "must be one aggregate point, not the full d1 distribution")
+        self.assertEqual(series[0].data[0].y, 42.0, "must use kpi1.median, not d1's histogram values")
+        self.assertIn("10-20", series[0].name)
+
     def test_map_metrics_payload_to_series_raises_when_distribution_d1_missing(self) -> None:
         kpi = SimpleNamespace(
             kpi1=SimpleNamespace(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
@@ -15,47 +14,6 @@ from src.util.logging_utils import log_context
 logger = logging.getLogger(__name__)
 
 GraphQLQueryCallback = Callable[[Dict[str, Any]], None]
-
-
-def _summarize_graphql_errors(errors: List[Any], sample_limit: int = 5) -> Dict[str, Any]:
-    message_counts: Counter[str] = Counter()
-    code_counts: Counter[str] = Counter()
-    path_counts: Counter[str] = Counter()
-    samples: List[Dict[str, str]] = []
-
-    for err in errors:
-        if not isinstance(err, dict):
-            continue
-
-        message_raw = err.get("message")
-        message = str(message_raw).strip() if message_raw is not None else ""
-        if not message:
-            message = "(no message)"
-        message_counts[message] += 1
-
-        extensions = err.get("extensions")
-        code: Optional[str] = None
-        if isinstance(extensions, dict):
-            code_raw = extensions.get("code")
-            if isinstance(code_raw, str) and code_raw.strip():
-                code = code_raw.strip()
-        code_counts[code or "-"] += 1
-
-        path_raw = err.get("path")
-        path_label = "-"
-        if isinstance(path_raw, list) and path_raw:
-            path_label = ".".join(str(part) for part in path_raw)
-        path_counts[path_label] += 1
-
-        if len(samples) < sample_limit:
-            samples.append({"message": message, "code": code or "-", "path": path_label})
-
-    return {
-        "message_counts": dict(message_counts),
-        "code_counts": dict(code_counts),
-        "path_counts": dict(path_counts),
-        "sample": samples,
-    }
 
 
 def _runner_log_context(
@@ -98,6 +56,7 @@ async def run_graphql_request(
     log_graphql_query: bool = False,
     batched_time_periods: Optional[List[Any]] = None,
     query_cb: Optional[GraphQLQueryCallback] = None,
+    is_filter_grouped: bool = False,
 ) -> List[ChartSeries]:
     trace_label = trace_id
     request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
@@ -207,14 +166,10 @@ async def run_graphql_request(
 
     if getattr(resp, "errors", None):
         request_failures.append("graphql_error")
-        errors = cast(List[Any], resp.errors or [])
-        error_count = len(errors)
-        error_summary = _summarize_graphql_errors(errors)
+        error_count = len(resp.errors or [])
         logger.error(
-            "[plan_executor] GraphQL errors returned (count=%s, unique_messages=%s, unique_codes=%s)",
+            "[plan_executor] GraphQL errors returned (count=%s)",
             error_count,
-            len(error_summary["message_counts"]),
-            len(error_summary["code_counts"]),
             extra=_runner_log_context(
                 event="request_runner.graphql_errors_returned",
                 outcome="failure",
@@ -222,10 +177,6 @@ async def run_graphql_request(
                 query_hash=q_hash,
                 group_by_field=group_by_field,
                 error_count=error_count,
-                error_message_counts=error_summary["message_counts"],
-                error_code_counts=error_summary["code_counts"],
-                error_path_counts=error_summary["path_counts"],
-                error_samples=error_summary["sample"],
             ),
         )
 
@@ -257,7 +208,10 @@ async def run_graphql_request(
         if kpi_groups is None:
             continue
         if not isinstance(kpi_groups, list):
-            raise ValueError(f"Invalid GraphQL metrics payload: metric {metric_alias!r} has non-list kpi_group")
+            raise ValueError(
+                "Invalid GraphQL metrics payload: "
+                f"metric {metric_alias!r} has non-list kpi_group"
+            )
         kpi_group_count += len(kpi_groups)
 
     series = map_metrics_payload_to_series(
@@ -268,6 +222,7 @@ async def run_graphql_request(
         add_time_period_labels=add_time_period_labels,
         scope_label=scope_label,
         batched_time_periods=batched_time_periods,
+        is_filter_grouped=is_filter_grouped,
     )
 
     skipped_rows = 0
@@ -276,7 +231,10 @@ async def run_graphql_request(
         if kpi_groups is None:
             continue
         if not isinstance(kpi_groups, list):
-            raise ValueError(f"Invalid GraphQL metrics payload: metric {metric_alias!r} has non-list kpi_group")
+            raise ValueError(
+                "Invalid GraphQL metrics payload: "
+                f"metric {metric_alias!r} has non-list kpi_group"
+            )
         for kpi in cast(List[object], kpi_groups):
             if getattr(kpi, "kpi1", None) is None:
                 skipped_rows += 1
@@ -290,7 +248,7 @@ async def run_graphql_request(
                 if skipped_rows > 0:
                     detail_bits.append(f"{skipped_rows}/{total_rows} row(s) were omitted")
                 if getattr(resp, "errors", None):
-                    detail_bits.append("the backend returned GraphQL errors")
+                    detail_bits.append("the backend returned validation errors")
                 _append_warning(f"Partial data returned for {request_label}; {' and '.join(detail_bits)}.")
             else:
                 _append_warning(f"No usable data was returned for {request_label}; 0/{total_rows} row(s) had valid data.")
@@ -322,7 +280,7 @@ async def run_graphql_request(
         if skipped_rows > 0:
             warning_bits.append(f"{skipped_rows}/{total_rows} row(s) were omitted")
         if has_graphql_errors:
-            warning_bits.append("the backend returned GraphQL errors")
+            warning_bits.append("the backend returned validation errors")
 
         warning_text = f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
         _append_warning(warning_text)

@@ -60,6 +60,7 @@
             "origin_scope": {
               "scope_type": "mine",
               "value": null,
+              "label": "My hospital",
               "country_code": null
             }
           },
