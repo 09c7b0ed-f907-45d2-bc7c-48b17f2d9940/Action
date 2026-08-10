@@ -1223,6 +1223,7 @@ async def _execute_request_spec(
         request_warnings=request_warnings,
         batched_time_periods=spec.batched_time_periods,
         query_cb=context.query_cb,
+        is_filter_grouped=spec.is_filter_grouped,
     )
     return RequestExecutionResult(spec=spec, series=series)
 

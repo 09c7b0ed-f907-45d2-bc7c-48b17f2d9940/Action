@@ -124,7 +124,7 @@ _STAT_TEST_ENTITY_KEYS = {
 
 _STATISTICAL_COHORT_ENTITY_KEYS = {
     "provider_id",
-    "provider_group_id",
+    "group_id",
     "provider_name",
     "provider_group_name",
     "hospital_name",
@@ -445,7 +445,11 @@ def _extract_string_list(value: Any) -> List[str]:
 
 
 def _extract_provider_group_ids(entities: Dict[str, Any]) -> List[int]:
-    raw_values = _extract_string_list(entities.get("provider_group_id"))
+    # Rasa (and the domain's own registered entity, filters.yml) extracts this
+    # as "group_id", not "provider_group_id" -- the latter was never a real
+    # entity key, so this always found zero IDs even when the request named
+    # two provider groups explicitly.
+    raw_values = _extract_string_list(entities.get("group_id"))
     out: List[int] = []
     for token in raw_values:
         for match in re.findall(r"\d+", token):

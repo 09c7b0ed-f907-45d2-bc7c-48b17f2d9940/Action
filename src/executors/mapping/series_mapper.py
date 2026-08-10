@@ -140,6 +140,7 @@ def map_metrics_payload_to_series(
     add_time_period_labels: bool,
     scope_label: Optional[str] = None,
     batched_time_periods: Optional[List[Any]] = None,
+    is_filter_grouped: bool = False,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
 
@@ -151,7 +152,14 @@ def map_metrics_payload_to_series(
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
 
-            is_grouped_or_time = bool(group_by_field) or add_time_period_labels
+            # is_filter_grouped: this request's category (an age/NIHSS bucket, a
+            # boolean split) was realized as a client-side case filter rather
+            # than a server groupBy -- group_by_field is correctly None for
+            # these (GraphQL has no native groupBy for arbitrary buckets), but
+            # each such request still represents exactly one category, so it
+            # needs the same single-aggregate-point-per-series treatment as a
+            # real server groupBy, not the plain-distribution-histogram path.
+            is_grouped_or_time = bool(group_by_field) or add_time_period_labels or is_filter_grouped
             if is_grouped_or_time:
                 x_value: str
                 tp_start: Optional[str] = None

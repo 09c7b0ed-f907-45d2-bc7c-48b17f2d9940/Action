@@ -67,7 +67,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
                 entities={
                     "statistical_test_type": "MANN_WHITNEY_U_TEST",
                     "metric": "DTN",
-                    "provider_group_id": ["provider group 279", "provider group 280"],
+                    "group_id": ["provider group 279", "provider group 280"],
                     "date": ["2024-01-01", "2026-12-31"],
                 },
                 include_plan=True,
@@ -129,7 +129,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
                 question="Run a Mann-Whitney U test for DTN",
                 entities={
                     "statistical_test_type": "MANN_WHITNEY_U_TEST",
-                    "provider_group_id": ["provider group 111", "provider group 112"],
+                    "group_id": ["provider group 111", "provider group 112"],
                 },
                 include_plan=True,
             )
@@ -170,7 +170,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
                 question="Run a Mann-Whitney U test for DTN",
                 entities={
                     "statistical_test_type": "MANN_WHITNEY_U_TEST",
-                    "provider_group_id": ["provider group 1", "provider group 2"],
+                    "group_id": ["provider group 1", "provider group 2"],
                 },
                 include_plan=True,
             )
@@ -208,7 +208,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
                 entities={
                     "statistical_test_type": "MANN_WHITNEY_U_TEST",
                     "metric": "DTN",
-                    "provider_group_id": ["provider group 289", "provider group 252"],
+                    "group_id": ["provider group 289", "provider group 252"],
                     "date": ["2023-01-01", "2023-12-31"],
                 },
                 include_plan=True,

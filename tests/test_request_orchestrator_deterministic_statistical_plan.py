@@ -41,7 +41,7 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
     def test_builds_deterministic_statistical_plan_for_provider_group_comparison(self) -> None:
         entities = {
             "metric": ["DTN"],
-            "provider_group_id": ["provider group 2825", "provider group 3001"],
+            "group_id": ["provider group 2825", "provider group 3001"],
             "date": ["2023-01-01", "2023-12-31"],
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
         }
@@ -110,7 +110,7 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
     def test_prefers_provider_group_ids_when_both_id_types_present(self) -> None:
         entities = {
             "metric": ["DTN"],
-            "provider_group_id": ["provider group 2825", "provider group 3001"],
+            "group_id": ["provider group 2825", "provider group 3001"],
             "provider_id": ["provider 289", "provider 252"],
             "date": ["2023-01-01", "2023-12-31"],
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
@@ -143,7 +143,7 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
     def test_prefers_provider_ids_when_question_mentions_provider_not_group(self) -> None:
         entities = {
             "metric": ["DTN"],
-            "provider_group_id": ["provider group 2825", "provider group 3001"],
+            "group_id": ["provider group 2825", "provider group 3001"],
             "provider_id": ["provider 289", "provider 252"],
             "date": ["2023-01-01", "2023-12-31"],
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],

@@ -25,6 +25,12 @@ class RequestSpec:
     add_time_period_labels: bool
     scope_label: Optional[str] = None
     batched_time_periods: List[TimePeriod] = field(default_factory=lambda: cast(List[TimePeriod], []))
+    # True when this request's category (e.g. an age/NIHSS bucket, a boolean
+    # split) was realized as a client-side case filter rather than a server
+    # groupBy -- group_by_field is correctly None for these (GraphQL has no
+    # native groupBy for arbitrary buckets), but the series mapper still needs
+    # to know each request represents one category, not an ungrouped whole.
+    is_filter_grouped: bool = False
 
 
 def _collect_date_bounds(
@@ -133,6 +139,7 @@ def build_primary_request_specs(
                         add_time_period_labels=batched_time_enabled,
                         scope_label=effective_scope_label,
                         batched_time_periods=batched_time_periods,
+                        is_filter_grouped=bool(filter_dims),
                     )
                 )
         else:
@@ -156,6 +163,7 @@ def build_primary_request_specs(
                     group_by_field=group_by_field,
                     add_time_period_labels=batched_time_enabled,
                     batched_time_periods=batched_time_periods,
+                    is_filter_grouped=bool(filter_dims),
                 )
             )
 
