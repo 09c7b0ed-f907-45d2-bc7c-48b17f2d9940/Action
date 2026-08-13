@@ -103,6 +103,31 @@ class VisualizationSummaryStatsTests(unittest.TestCase):
         self.assertIn("Here's your chart and statistical comparison.", msg)
         self.assertIn("2 statistical tests were skipped.", msg)
 
+    def test_opening_line_can_be_suppressed_to_avoid_duplicate_confirmation(self) -> None:
+        # visualization_action.py's one-shot flow already sends its own
+        # specific confirmation (_build_confirmation_message) before this is
+        # called -- this must return empty (not "Here's your chart.") when
+        # there's nothing else to add, so callers don't send a second,
+        # redundant chat bubble.
+        formatter = _load_format_execution_summary()
+
+        msg = formatter({"chart_count": 1, "stats_count": 0}, language="en", include_opening_line=False)
+        self.assertEqual(msg, "")
+
+        msg = formatter({}, language="en", include_opening_line=False)
+        self.assertEqual(msg, "")
+
+    def test_opening_line_suppressed_still_reports_a_genuine_caveat(self) -> None:
+        formatter = _load_format_execution_summary()
+
+        msg = formatter(
+            {"chart_count": 1, "stats_count": 1, "stats_errors": 1},
+            language="en",
+            include_opening_line=False,
+        )
+
+        self.assertEqual(msg, "One statistical test couldn't be completed.")
+
     def test_no_emoji_anywhere_in_output(self) -> None:
         formatter = _load_format_execution_summary()
         for summary in (

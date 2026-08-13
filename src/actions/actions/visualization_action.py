@@ -1423,16 +1423,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                         )
                     )
             finally:
-                if completed_successfully:
-                    if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
-                        ctx.say(text=format_execution_summary(execution_summary, language=language))
-                    else:
-                        ctx.say(
-                            text=translate(
-                                "action.visualization.success_complete",
-                                language=language,
-                            )
-                        )
+                # _build_confirmation_message already sent the "here's your
+                # X" confirmation above (unconditionally, right after
+                # completed_successfully is set) -- this only adds anything
+                # when there's a genuine caveat (skipped/failed stats) to
+                # report, never a second redundant "here's your chart".
+                if completed_successfully and _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                    caveat = format_execution_summary(execution_summary, language=language, include_opening_line=False)
+                    if caveat:
+                        ctx.say(text=caveat)
                     if plan_obj is not None:
                         _emit_next_metric_followup(ctx=ctx, plan_obj=plan_obj, language=language)
                 ctx.done()
