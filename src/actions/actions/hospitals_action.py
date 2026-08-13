@@ -262,7 +262,7 @@ class ActionListHospitals(Action):  # pyright: ignore
                     ),
                 )
                 language = resolve_language_from_tracker(tracker)
-                dispatcher.utter_message(text=f"❌ {friendly_hospital_error(exc, language=language)}")
+                dispatcher.utter_message(text=friendly_hospital_error(exc, language=language))
                 if _ECHO_INTERNAL_ERRORS:
                     dispatcher.utter_message(
                         text=translate(

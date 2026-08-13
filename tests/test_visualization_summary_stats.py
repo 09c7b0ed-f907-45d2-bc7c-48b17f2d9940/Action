@@ -46,42 +46,74 @@ def _load_format_execution_summary():
 
 
 class VisualizationSummaryStatsTests(unittest.TestCase):
-    def test_stats_only_summary_does_not_report_zero_charts(self) -> None:
+    def test_stats_only_summary_does_not_mention_charts(self) -> None:
+        formatter = _load_format_execution_summary()
+        summary = {
+            "chart_count": 0,
+            "stats_count": 1,
+        }
+
+        msg = formatter(summary, language="en")
+
+        self.assertEqual(msg, "Here's your statistical comparison.")
+
+    def test_mixed_summary_reports_a_single_natural_line_no_technical_detail(self) -> None:
         formatter = _load_format_execution_summary()
         summary = {
             "trace_id": "abc123",
-            "chart_count": 0,
-            "stats_count": 1,
-            "stats_skipped": 0,
-            "stats_errors": 0,
-            "estimated_queries": 1,
-            "actual_queries": 1,
-            "batches": [],
+            "chart_count": 1,
+            "stats_count": 3,
+            "estimated_queries": 4,
+            "actual_queries": 4,
         }
 
-        msg = formatter(summary, show_normalization=False, planner_diagnostics=None, language="en")
+        msg = formatter(summary, language="en")
 
-        self.assertIn("Plan produced 1 statistical test result.", msg)
-        self.assertNotIn("Plan produced 0 charts.", msg)
+        self.assertEqual(msg, "Here's your chart and statistical comparison.")
+        # None of the developer diagnostics this used to dump into the chat
+        # should ever appear -- see CVaLab for that detail instead.
+        self.assertNotIn("Trace ID", msg)
+        self.assertNotIn("queried", msg)
+        self.assertNotIn("cache", msg.lower())
 
-    def test_stats_summary_includes_skip_and_error_counts(self) -> None:
+    def test_stats_errors_take_priority_over_skipped_count(self) -> None:
         formatter = _load_format_execution_summary()
         summary = {
             "chart_count": 1,
             "stats_count": 3,
             "stats_skipped": 1,
             "stats_errors": 1,
-            "estimated_queries": 4,
-            "actual_queries": 4,
-            "batches": [],
         }
 
-        msg = formatter(summary, show_normalization=False, planner_diagnostics=None, language="en")
+        msg = formatter(summary, language="en")
 
-        self.assertIn("Plan produced 1 chart.", msg)
-        self.assertIn("Plan produced 3 statistical test results.", msg)
-        self.assertIn("Skipped 1 statistical test result(s).", msg)
-        self.assertIn("1 statistical test result(s) returned errors.", msg)
+        self.assertIn("One statistical test couldn't be completed.", msg)
+        self.assertNotIn("skipped", msg.lower())
+
+    def test_many_charts_and_skipped_stats_use_plural_phrasing(self) -> None:
+        formatter = _load_format_execution_summary()
+        summary = {
+            "chart_count": 2,
+            "stats_count": 2,
+            "stats_skipped": 2,
+        }
+
+        msg = formatter(summary, language="en")
+
+        self.assertIn("Here's your chart and statistical comparison.", msg)
+        self.assertIn("2 statistical tests were skipped.", msg)
+
+    def test_no_emoji_anywhere_in_output(self) -> None:
+        formatter = _load_format_execution_summary()
+        for summary in (
+            {"chart_count": 1, "stats_count": 0},
+            {"chart_count": 0, "stats_count": 1},
+            {"chart_count": 2, "stats_count": 2, "stats_errors": 1},
+            {},
+        ):
+            msg = formatter(summary, language="en")
+            for ch in msg:
+                self.assertLess(ord(ch), 0x1F300, f"unexpected emoji-range character in: {msg!r}")
 
 
 if __name__ == "__main__":
