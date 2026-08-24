@@ -32,6 +32,7 @@
 !/envgen.sh
 !/envgen.config
 !/requirements.txt
+!/.env.example
 
 # Add source
 !/src/**
