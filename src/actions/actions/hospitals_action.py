@@ -92,7 +92,7 @@ def _build_pagination_buttons(*, offset: int, limit: int, total_count: int, lang
         buttons.append(
             {
                 "title": translate("action.hospitals.previous_page_button", language=language),
-                "payload": f"list hospitals {previous_offset}",
+                "payload": f'/list_hospitals{{"offset": {previous_offset}}}',
             }
         )
 
@@ -101,7 +101,7 @@ def _build_pagination_buttons(*, offset: int, limit: int, total_count: int, lang
         buttons.append(
             {
                 "title": translate("action.hospitals.next_page_button", language=language),
-                "payload": f"list hospitals {next_offset}",
+                "payload": f'/list_hospitals{{"offset": {next_offset}}}',
             }
         )
 
