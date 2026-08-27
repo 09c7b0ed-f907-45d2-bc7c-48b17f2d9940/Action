@@ -2,12 +2,16 @@ import unittest
 from unittest.mock import patch
 
 from src.domain.langchain.schema import (
+    AnalysisSemanticsSpec,
     AnalysisPlan,
     AndFilter,
+    ChartSpec,
     DataOriginSpec,
     DateFilter,
+    MeasureSemanticsSpec,
     MetricSpec,
     OriginScopeSpec,
+    SplitSpec,
     StatisticalTestSpec,
 )
 from src.planners.langchain.request_orchestrator import orchestrate_visualization_request
@@ -15,6 +19,41 @@ from src.planners.langchain.request_orchestrator import VisualizationRequestOutc
 
 
 class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
+    def test_drops_redundant_canonical_stroke_type_self_split_before_returning_plan(self) -> None:
+        plan = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="LINE",
+                    metrics=[MetricSpec(metric="STROKE_TYPE")],
+                    semantics=AnalysisSemanticsSpec(
+                        intent="DISTRIBUTION",
+                        measure=MeasureSemanticsSpec(type="DISTRIBUTION"),
+                        splits=[SplitSpec(kind="CANONICAL", field="STROKE_TYPE")],
+                    ),
+                )
+            ]
+        )
+
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+        ), patch(
+            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+            return_value=plan,
+        ):
+            outcome = orchestrate_visualization_request(
+                question="Show me a line graph of STROKE_TYPE",
+                entities={"chart_type": "LINE", "metric": "STROKE_TYPE"},
+                include_plan=True,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertIsNotNone(outcome.plan)
+        assert outcome.plan is not None
+        chart = outcome.plan.charts[0]
+        assert chart.semantics is not None
+        self.assertIsNone(chart.semantics.splits)
+
     def test_clarifies_when_statistical_entities_do_not_define_two_cohorts(self) -> None:
         with patch(
             "src.planners.langchain.request_orchestrator._decision_stage",

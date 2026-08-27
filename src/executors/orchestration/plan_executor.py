@@ -993,6 +993,20 @@ class VisualizationExecutionError(RuntimeError):
         self.clarification_options = list(clarification_options or [])
 
 
+def _invalid_plan_semantics_error(exc: Exception, trace_id: str) -> VisualizationExecutionError:
+    return VisualizationExecutionError(
+        user_message=(
+            "I could not apply the requested grouping for this chart. "
+            "Please try grouping by stroke type, sex, age, NIHSS, or a time period."
+        ),
+        reason="invalid_plan_semantics",
+        code="EXEC_PLAN_INVALID_SEMANTICS",
+        trace_id=trace_id,
+        clarification_type="analysis_plan",
+        clarification_options=[],
+    )
+
+
 def _to_execution_error(
     failure_reasons: List[str], trace_id: Optional[str] = None
 ) -> VisualizationExecutionError:
@@ -1371,7 +1385,10 @@ async def execute_plan_async(
 
     plan_charts = coalesce(plan.charts, [])
     response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
-    estimated_queries = estimate_query_count_for_plan(plan)
+    try:
+        estimated_queries = estimate_query_count_for_plan(plan)
+    except ValueError as exc:
+        raise _invalid_plan_semantics_error(exc, trace_id=trace_id_resolved) from exc
     actual_queries = 0
     summary_batches: List[ExecutionBatchSummary] = []
 
@@ -1402,7 +1419,10 @@ async def execute_plan_async(
             build_metric_requests(plan_chart=planChart)
         )
 
-        compiled_grouping = compile_chart_grouping(planChart)
+        try:
+            compiled_grouping = compile_chart_grouping(planChart)
+        except ValueError as exc:
+            raise _invalid_plan_semantics_error(exc, trace_id=trace_id_resolved) from exc
         dims: List[Dimension] = compiled_grouping.dimensions
 
         for batch in compiled_grouping.batches:

@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
+from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, SplitSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -695,6 +695,85 @@ def _validate_statistical_test_support(question: str) -> Optional[VisualizationR
 # Raw group_by entity values the NLU lookup table recognises that map directly onto a
 # SplitSpec split kind rather than a time grain or a GroupByType.yml canonical field.
 _DIRECT_SPLIT_KIND_GROUP_BY_TOKENS = {"STROKE_TYPE", "SEX_TYPE", "SEX", "AGE", "NIHSS"}
+_DIRECT_SPLIT_KIND_BY_CANONICAL_FIELD = {
+    "STROKE_TYPE": "STROKE_TYPE",
+    "SEX_TYPE": "SEX",
+    "SEX": "SEX",
+    "AGE": "AGE",
+    "NIHSS": "NIHSS",
+}
+
+_REDUNDANT_SELF_SPLIT_METRICS_BY_KIND = {
+    "STROKE_TYPE": {"STROKE_TYPE"},
+    "SEX": {"SEX_TYPE"},
+}
+
+
+def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
+    """Normalize planner split semantics into compiler-supported forms.
+
+    The retrieval compiler expects direct split kinds (STROKE_TYPE/SEX/AGE/NIHSS)
+    for category fan-out. Some generated plans encode these as CANONICAL splits,
+    which are valid schema but can fail compilation at runtime.
+    """
+    charts = list(plan.charts or [])
+    if not charts:
+        return plan
+
+    for chart in charts:
+        semantics = chart.semantics
+        if semantics is None or not semantics.splits:
+            continue
+
+        metric_codes = {
+            (metric.metric or "").strip().upper()
+            for metric in chart.metrics or []
+            if isinstance(metric.metric, str) and metric.metric.strip()
+        }
+
+        normalized_splits: List[SplitSpec] = []
+        changed = False
+        for split in semantics.splits:
+            kind = (split.kind or "").strip().upper()
+
+            # If the metric itself is already an enum distribution axis, splitting by
+            # that exact same axis creates a self-split that distorts chart shape.
+            if kind in _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND:
+                redundant_metrics = _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND[kind]
+                if any(metric in metric_codes for metric in redundant_metrics):
+                    changed = True
+                    continue
+
+            if kind != "CANONICAL":
+                normalized_splits.append(split)
+                continue
+
+            field = (split.field or "").strip().upper()
+            mapped_kind = _DIRECT_SPLIT_KIND_BY_CANONICAL_FIELD.get(field)
+            if mapped_kind is None and not field and "STROKE_TYPE" in metric_codes:
+                mapped_kind = "STROKE_TYPE"
+
+            if mapped_kind is None:
+                normalized_splits.append(split)
+                continue
+
+            redundant_metrics = _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND.get(mapped_kind)
+            if redundant_metrics and any(metric in metric_codes for metric in redundant_metrics):
+                changed = True
+                continue
+
+            replacement = SplitSpec(
+                kind=mapped_kind,
+                categories=list(split.categories) if split.categories is not None else None,
+                buckets=list(split.buckets) if split.buckets is not None else None,
+            )
+            normalized_splits.append(replacement)
+            changed = True
+
+        if changed:
+            semantics.splits = normalized_splits or None
+
+    return plan
 
 
 @lru_cache(maxsize=1)
@@ -1372,6 +1451,7 @@ def orchestrate_visualization_request(
             # from unrelated prior turns into the provider/provider-group checks.
             deterministic_plan = _build_deterministic_statistical_plan(question, entities)
             if deterministic_plan is not None:
+                deterministic_plan = _normalize_plan_semantic_splits(deterministic_plan)
                 stats_validation = _validate_statistical_plan_readiness(deterministic_plan)
                 if stats_validation is not None:
                     return stats_validation
@@ -1390,6 +1470,7 @@ def orchestrate_visualization_request(
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
+            plan = _normalize_plan_semantic_splits(plan)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
