@@ -14,7 +14,7 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
 )
-from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome, orchestrate_visualization_request
+from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome, _detect_unsupported_risk_factor_filter, orchestrate_visualization_request
 
 
 class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
@@ -55,6 +55,20 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
         chart = outcome.plan.charts[0]
         assert chart.semantics is not None
         self.assertIsNone(chart.semantics.splits)
+
+    def test_allows_valid_vte_intervention_metrics_as_standalone_metrics(self) -> None:
+        for metric in [
+            "VTE_INTERVENTION_AIS",
+            "VTE_INTERVENTION_ICH",
+            "VTE_INTERVENTION_TYPE_AIS",
+            "VTE_INTERVENTION_TYPE_ICH",
+        ]:
+            self.assertIsNone(
+                _detect_unsupported_risk_factor_filter(
+                    f"Show me a line graph of {metric}, DTO/Orchestration Error",
+                    {"metric": [metric]},
+                )
+            )
 
     def test_clarifies_when_statistical_entities_do_not_define_two_cohorts(self) -> None:
         with patch(

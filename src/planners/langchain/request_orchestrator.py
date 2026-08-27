@@ -857,6 +857,14 @@ def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, An
     if "RISK_FACTORS_TYPE" in metric_values:
         return None
 
+    # Valid standalone metrics can legitimately contain the VTE abbreviation in
+    # their canonical names (e.g. VTE_INTERVENTION_AIS). These must not be
+    # mistaken for a risk-factor filter phrase just because the word "vte" is
+    # present in the question.
+    for metric in metric_values:
+        if metric.startswith("VTE_"):
+            return None
+
     for term, label in _risk_factor_filter_terms().items():
         # Leading boundary only (not trailing), so a plural like "smokers"
         # still matches the SSOT term "smoker". Best-effort, not exhaustive --
