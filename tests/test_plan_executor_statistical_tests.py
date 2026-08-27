@@ -1,6 +1,6 @@
+import asyncio
 import os
 import unittest
-import asyncio
 from unittest.mock import patch
 
 from pydantic import ValidationError
@@ -9,11 +9,22 @@ os.environ.setdefault("RASA_PROXY_URL", "http://localhost")
 os.environ.setdefault("ACTION_SERVER_TOKEN", "dummy")
 os.environ.setdefault("RASA_PROXY_GRAPHQL_TARGET", "http://localhost/graphql")
 
+from src.domain.dto.analytics.statistical_test import StatisticalTestResult
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import DataOrigin, GraphQLQueryRequest, TimePeriod
-from src.domain.dto.analytics.statistical_test import StatisticalTestResult
-from src.domain.langchain.schema import AnalysisPlan, AndFilter, ChartSpec, DataOriginSpec, DateFilter, GroupBySex, MetricSpec, StatisticalTestSpec
-from src.domain.langchain.schema import AnalysisSemanticsSpec, MeasureSemanticsSpec, SplitSpec
+from src.domain.langchain.schema import (
+    AnalysisPlan,
+    AnalysisSemanticsSpec,
+    AndFilter,
+    ChartSpec,
+    DataOriginSpec,
+    DateFilter,
+    GroupBySex,
+    MeasureSemanticsSpec,
+    MetricSpec,
+    SplitSpec,
+    StatisticalTestSpec,
+)
 from src.executors.orchestration import plan_executor
 from src.executors.planning.query_compiler import CompiledBatch, CompiledChartGrouping
 
@@ -98,14 +109,17 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             ),
         )
 
-        with patch.object(
-            plan_executor,
-            "_translate_mann_whitney_metrics",
-            return_value=["DTN"],
-        ), patch.object(
-            plan_executor,
-            "_execute_mann_whitney_query",
-            return_value=[],
+        with (
+            patch.object(
+                plan_executor,
+                "_translate_mann_whitney_metrics",
+                return_value=["DTN"],
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_mann_whitney_query",
+                return_value=[],
+            ),
         ):
             with self.assertRaises(plan_executor.VisualizationExecutionError) as err:
                 plan_executor._execute_mann_whitney_test(
@@ -216,9 +230,7 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             series=[
                 ChartSeries(
                     name="DTN",
-                    data=[
-                        ChartPoint(x="2023-01", y=1.0)
-                    ],
+                    data=[ChartPoint(x="2023-01", y=1.0)],
                 )
             ],
         )
@@ -241,37 +253,44 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
         async def _fake_execute_specs_concurrent(**kwargs):
             return [first, second]
 
-        with patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart), patch.object(
-            plan_executor,
-            "build_metric_requests",
-            return_value=([], None, [None], [None]),
-        ), patch.object(
-            plan_executor,
-            "compile_chart_grouping",
-            return_value=CompiledChartGrouping(
-                dimensions=[],
-                batches=[
-                    CompiledBatch(
-                        server_groupby=None,
-                        filter_dims=[],
-                        combos_list=[tuple()],
-                        batched_time_enabled=False,
-                        batched_time_periods=[],
-                    )
-                ],
+        with (
+            patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart),
+            patch.object(
+                plan_executor,
+                "build_metric_requests",
+                return_value=([], None, [None], [None]),
             ),
-        ), patch.object(
-            plan_executor,
-            "build_primary_request_specs",
-            return_value=[first.spec, second.spec],
-        ), patch.object(
-            plan_executor,
-            "_execute_specs_concurrent",
-            side_effect=_fake_execute_specs_concurrent,
-        ), patch.object(
-            plan_executor,
-            "estimate_query_count_for_plan",
-            return_value=2,
+            patch.object(
+                plan_executor,
+                "compile_chart_grouping",
+                return_value=CompiledChartGrouping(
+                    dimensions=[],
+                    batches=[
+                        CompiledBatch(
+                            server_groupby=None,
+                            filter_dims=[],
+                            combos_list=[tuple()],
+                            batched_time_enabled=False,
+                            batched_time_periods=[],
+                        )
+                    ],
+                ),
+            ),
+            patch.object(
+                plan_executor,
+                "build_primary_request_specs",
+                return_value=[first.spec, second.spec],
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_specs_concurrent",
+                side_effect=_fake_execute_specs_concurrent,
+            ),
+            patch.object(
+                plan_executor,
+                "estimate_query_count_for_plan",
+                return_value=2,
+            ),
         ):
             response = asyncio.run(
                 plan_executor.execute_plan_async(
@@ -342,37 +361,44 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
         async def _fake_execute_specs_concurrent(**kwargs):
             return [first, second]
 
-        with patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart), patch.object(
-            plan_executor,
-            "build_metric_requests",
-            return_value=([], None, [None], [None]),
-        ), patch.object(
-            plan_executor,
-            "compile_chart_grouping",
-            return_value=CompiledChartGrouping(
-                dimensions=[],
-                batches=[
-                    CompiledBatch(
-                        server_groupby=None,
-                        filter_dims=[],
-                        combos_list=[tuple()],
-                        batched_time_enabled=False,
-                        batched_time_periods=[],
-                    )
-                ],
+        with (
+            patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart),
+            patch.object(
+                plan_executor,
+                "build_metric_requests",
+                return_value=([], None, [None], [None]),
             ),
-        ), patch.object(
-            plan_executor,
-            "build_primary_request_specs",
-            return_value=[first.spec, second.spec],
-        ), patch.object(
-            plan_executor,
-            "_execute_specs_concurrent",
-            side_effect=_fake_execute_specs_concurrent,
-        ), patch.object(
-            plan_executor,
-            "estimate_query_count_for_plan",
-            return_value=2,
+            patch.object(
+                plan_executor,
+                "compile_chart_grouping",
+                return_value=CompiledChartGrouping(
+                    dimensions=[],
+                    batches=[
+                        CompiledBatch(
+                            server_groupby=None,
+                            filter_dims=[],
+                            combos_list=[tuple()],
+                            batched_time_enabled=False,
+                            batched_time_periods=[],
+                        )
+                    ],
+                ),
+            ),
+            patch.object(
+                plan_executor,
+                "build_primary_request_specs",
+                return_value=[first.spec, second.spec],
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_specs_concurrent",
+                side_effect=_fake_execute_specs_concurrent,
+            ),
+            patch.object(
+                plan_executor,
+                "estimate_query_count_for_plan",
+                return_value=2,
+            ),
         ):
             with self.assertRaises(plan_executor.VisualizationExecutionError) as err:
                 asyncio.run(
@@ -421,14 +447,17 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             )
         ]
 
-        with patch.object(
-            plan_executor,
-            "_translate_mann_whitney_metrics",
-            return_value=["DTN"],
-        ), patch.object(
-            plan_executor,
-            "_execute_mann_whitney_query",
-            return_value=expected,
+        with (
+            patch.object(
+                plan_executor,
+                "_translate_mann_whitney_metrics",
+                return_value=["DTN"],
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_mann_whitney_query",
+                return_value=expected,
+            ),
         ):
             results = plan_executor._execute_temporal_pair_mann_whitney(
                 test_a=test_a,
@@ -523,20 +552,23 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             ),
         )
 
-        with patch.object(
-            plan_executor,
-            "_translate_mann_whitney_metrics",
-            return_value=["DTN"],
-        ), patch.object(
-            plan_executor,
-            "_execute_mann_whitney_query",
-            return_value=[
-                StatisticalTestResult(
-                    test_type="MANN_WHITNEY_U_TEST",
-                    status="error",
-                    reason="No permission to calculate KPIs for given data origin",
-                )
-            ],
+        with (
+            patch.object(
+                plan_executor,
+                "_translate_mann_whitney_metrics",
+                return_value=["DTN"],
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_mann_whitney_query",
+                return_value=[
+                    StatisticalTestResult(
+                        test_type="MANN_WHITNEY_U_TEST",
+                        status="error",
+                        reason="No permission to calculate KPIs for given data origin",
+                    )
+                ],
+            ),
         ):
             with self.assertRaises(plan_executor.VisualizationExecutionError) as err:
                 plan_executor._execute_mann_whitney_test(

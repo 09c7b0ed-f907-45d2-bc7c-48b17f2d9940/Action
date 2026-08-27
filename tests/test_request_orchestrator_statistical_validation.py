@@ -2,8 +2,8 @@ import unittest
 from unittest.mock import patch
 
 from src.domain.langchain.schema import (
-    AnalysisSemanticsSpec,
     AnalysisPlan,
+    AnalysisSemanticsSpec,
     AndFilter,
     ChartSpec,
     DataOriginSpec,
@@ -14,8 +14,7 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
 )
-from src.planners.langchain.request_orchestrator import orchestrate_visualization_request
-from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome
+from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome, orchestrate_visualization_request
 
 
 class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
@@ -34,12 +33,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Show me a line graph of STROKE_TYPE",
@@ -94,12 +96,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN between provider group 279 and provider group 280 from 2024-01-01 to 2026-12-31",
@@ -125,12 +130,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test on DTN",
@@ -157,12 +165,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN",
@@ -198,12 +209,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN",
@@ -290,12 +304,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Compare my DTN for Q4 2025 and Q1 2026 using a Mann-Whitney U test",
@@ -342,12 +359,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Compare DTN for 2025 and 2026 using Mann-Whitney U",
@@ -401,12 +421,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Can you compare my dtn against army alhama de murcia hospital using a mann whitney u test",
@@ -442,12 +465,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             ]
         )
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
-        ), patch(
-            "src.planners.langchain.request_orchestrator.generate_analysis_plan",
-            return_value=plan,
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=plan,
+            ),
         ):
             outcome = orchestrate_visualization_request(
                 question="Can you compare my dtn against army alhama de murcia hospital using a mann whitney u test",
